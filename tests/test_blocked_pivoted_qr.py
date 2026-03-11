@@ -13,10 +13,10 @@ def _strictly_lower_norm(x: jnp.ndarray) -> jnp.ndarray:
 
 def _form_q_from_reflectors(m: int, reflectors) -> jnp.ndarray:
     q = jnp.eye(m, dtype=jnp.float32)
-    for j, v, tau in reflectors:
+    for j, v, tau in reversed(reflectors):
         updated = apply_reflector_to_block(v, tau, q[j:, :])
         q = q.at[j:, :].set(updated)
-    return q.T
+    return q
 
 
 def test_blocked_pivoted_qr_returns_upper_triangular_work_largest() -> None:
