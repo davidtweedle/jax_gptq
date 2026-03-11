@@ -96,9 +96,11 @@ def swap_columns(
     if j == pivot_col:
         return a, perm, norms
 
-    a = a.at[:, [j, pivot_col]].set(a[:, [pivot_col, j]])
-    perm = perm.at[[j, pivot_col]].set(perm[[pivot_col, j]])
-    norms = norms.at[[j, pivot_col]].set(norms[[pivot_col, j]])
+    orig_pos = jnp.array([j, pivot_col])
+    swap_pos = jnp.array([pivot_col, j])
+    a = a.at[:, orig_pos].set(a[:, swap_pos])
+    perm = perm.at[orig_pos].set(perm[swap_pos])
+    norms = norms.at[orig_pos].set(norms[swap_pos])
     return a, perm, norms
 
 
