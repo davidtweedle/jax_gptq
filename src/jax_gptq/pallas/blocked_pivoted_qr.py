@@ -1,0 +1,339 @@
+"""
+Reference structure for blocked pivoted QR.
+
+This file intentionally starts as a documented skeleton rather than a finished
+implementation. The goal is to pin down the control flow before optimizing with
+Pallas.
+
+High-level plan
+---------------
+
+Reference version:
+- choose the next pivot from exact current trailing norms
+- swap it into place
+- form one Householder reflector
+- apply that reflector to all remaining columns immediately
+- recompute norms exactly
+
+Later blocked version:
+- keep the same panel factorization logic
+- only update the active panel columns immediately
+- update trailing norm metadata without fully transforming the trailing matrix
+- when a trailing column is selected as the next pivot, first apply the previous
+  panel reflectors to that incoming column
+- apply the full accumulated panel update to the trailing matrix once the panel
+  is complete
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+import jax
+import jax.numpy as jnp
+
+PivotMode = Literal["largest", "smallest"]
+
+
+def choose_pivot(norms: jnp.ndarray, j: int, pivot_mode: PivotMode) -> int:
+    """
+    Choose the next pivot column from columns j:n.
+
+    Reference version:
+    - `norms` is assumed to contain exact current trailing column norms.
+
+    Later blocked version:
+    - `norms` will be metadata for the trailing columns rather than norms
+      computed from a fully updated trailing matrix.
+    """
+    norms = jnp.asarray(norms)
+    if norms.ndim != 1:
+        raise ValueError(f"norms must be 1D, got {norms.shape}")
+    if not 0 <= j < norms.shape[0]:
+        raise ValueError(f"j must be in [0, {norms.shape[0]}), got {j}")
+
+    trailing_norms = norms[j:]
+    if pivot_mode == "largest":
+        pivot_offset = jnp.argmax(trailing_norms)
+    elif pivot_mode == "smallest":
+        pivot_offset = jnp.argmin(trailing_norms)
+    else:
+        raise ValueError(f"unsupported pivot_mode={pivot_mode}")
+    return int(j + pivot_offset)
+
+
+def swap_columns(
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    j: int,
+    pivot_col: int,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Swap columns `j` and `pivot_col` in the working matrix and permutation.
+
+    Reference version:
+    - swap the physical columns in `a`
+    - swap entries in `perm`
+    - swap the corresponding pivot-score entries in `norms`
+
+    Later blocked version:
+    - the same bookkeeping still applies.
+    """
+    a = jnp.asarray(a)
+    perm = jnp.asarray(perm)
+    norms = jnp.asarray(norms)
+
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    if perm.ndim != 1:
+        raise ValueError(f"perm must be 1D, got {perm.shape}")
+    if norms.ndim != 1:
+        raise ValueError(f"norms must be 1D, got {norms.shape}")
+    if a.shape[1] != perm.shape[0] or a.shape[1] != norms.shape[0]:
+        raise ValueError("a, perm, and norms must agree on column dimension")
+
+    if j == pivot_col:
+        return a, perm, norms
+
+    a = a.at[:, [j, pivot_col]].set(a[:, [pivot_col, j]])
+    perm = perm.at[[j, pivot_col]].set(perm[[pivot_col, j]])
+    norms = norms.at[[j, pivot_col]].set(norms[[pivot_col, j]])
+    return a, perm, norms
+
+
+def householder_vector(x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Form one Householder reflector for the current column vector.
+
+    Returns:
+    - `v`: Householder vector
+    - `tau`: scalar coefficient
+    - `alpha`: resulting diagonal value for R
+
+    Reference version:
+    - this is the standard one-column QR primitive.
+
+    Later blocked version:
+    - unchanged.
+    """
+    x = jnp.asarray(x)
+    if x.ndim != 1:
+        raise ValueError(f"x must be 1D, got {x.shape}")
+
+    x0 = x[0]
+    x_tail = x[1:]
+    sigma = jnp.dot(x_tail, x_tail)
+
+    def trivial_case(_: None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        v = jnp.zeros_like(x).at[0].set(1)
+        tau = jnp.array(0, dtype=x.dtype)
+        alpha = x0
+        return v, tau, alpha
+
+    def reflector_case(_: None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        norm_x = jnp.sqrt(x0 * x0 + sigma)
+        alpha = jnp.where(x0 <= 0, norm_x, -norm_x)
+        beta = x0 - alpha
+        v = x / beta
+        v = v.at[0].set(1)
+        tau = beta / alpha
+        return v, tau, alpha
+
+    return jax.lax.cond(sigma == 0, trivial_case, reflector_case, operand=None)
+
+
+def apply_reflector_to_block(
+    v: jnp.ndarray,
+    tau: jnp.ndarray,
+    block: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Apply H = I - tau v v^T to a block of columns.
+
+    Reference version:
+    - used to update every remaining column immediately.
+
+    Later blocked version:
+    - still the primitive operation, but the trailing block should eventually be
+      updated only once after the panel is complete.
+    """
+    v = jnp.asarray(v)
+    block = jnp.asarray(block)
+    if v.ndim != 1:
+        raise ValueError(f"v must be 1D, got {v.shape}")
+    if block.ndim != 2:
+        raise ValueError(f"block must be 2D, got {block.shape}")
+    if block.shape[0] != v.shape[0]:
+        raise ValueError(
+            f"block row dimension must match v length, got {block.shape[0]} and {v.shape[0]}"
+        )
+
+    w = tau * (v @ block)
+    return block - jnp.outer(v, w)
+
+
+def update_norms_exact(a: jnp.ndarray, j: int) -> jnp.ndarray:
+    """
+    Recompute exact trailing norms for columns j+1:n.
+
+    Reference version:
+    - recompute from the fully updated trailing matrix for simplicity.
+
+    Later blocked version:
+    - replace this with metadata updates because the trailing matrix will not be
+      explicitly updated after every Householder step.
+    """
+    a = jnp.asarray(a)
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    if not -1 <= j < a.shape[1]:
+        raise ValueError(f"j must be in [-1, {a.shape[1]}), got {j}")
+
+    norms = jnp.zeros((a.shape[1],), dtype=a.dtype)
+    if j + 1 >= a.shape[1]:
+        return norms
+
+    trailing = a[j + 1 :, j + 1 :]
+    trailing_norms = jnp.linalg.norm(trailing, axis=0)
+    norms = norms.at[j + 1 :].set(trailing_norms)
+    return norms
+
+
+def factor_panel(
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    k: int,
+    panel_size: int,
+    pivot_mode: PivotMode,
+):
+    """
+    Factor one panel starting at global column `k`.
+
+    Panel invariant at local step `j`:
+    - columns k..j-1 are finalized
+    - remaining columns j:n are candidates for the next pivot
+
+    Reference version:
+    - choose pivot from exact norms
+    - swap it into place
+    - form a Householder reflector
+    - apply it to all remaining columns immediately
+    - recompute exact norms
+
+    Later blocked version:
+    - only update the remaining panel columns immediately
+    - do NOT fully update the trailing block after every step
+    - maintain trailing norm metadata instead
+    - if a trailing column is chosen as the next pivot, first apply the previous
+      panel reflectors to that incoming column before forming the next
+      Householder reflector
+    - after the panel is complete, apply the accumulated panel transform to the
+      trailing matrix in one shot
+    """
+    a = jnp.asarray(a)
+    perm = jnp.asarray(perm)
+    norms = jnp.asarray(norms)
+
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    if perm.ndim != 1 or perm.shape[0] != a.shape[1]:
+        raise ValueError(f"perm must be shape ({a.shape[1]},), got {perm.shape}")
+    if norms.ndim != 1 or norms.shape[0] != a.shape[1]:
+        raise ValueError(f"norms must be shape ({a.shape[1]},), got {norms.shape}")
+    if panel_size <= 0:
+        raise ValueError(f"panel_size must be positive, got {panel_size}")
+    if not 0 <= k < min(a.shape[0], a.shape[1]):
+        raise ValueError(f"k must be in [0, {min(a.shape[0], a.shape[1])}), got {k}")
+
+    panel_end = min(k + panel_size, min(a.shape[0], a.shape[1]))
+    reflectors: list[tuple[int, jnp.ndarray, jnp.ndarray]] = []
+
+    for j in range(k, panel_end):
+        pivot_col = choose_pivot(norms, j, pivot_mode)
+        a, perm, norms = swap_columns(a, perm, norms, j, pivot_col)
+
+        v, tau, alpha = householder_vector(a[j:, j])
+        reflectors.append((j, v, tau))
+
+        col = a[j:, j]
+        col = col.at[0].set(alpha)
+        if col.shape[0] > 1:
+            col = col.at[1:].set(v[1:])
+        a = a.at[j:, j].set(col)
+
+        if j + 1 < a.shape[1]:
+            updated_block = apply_reflector_to_block(v, tau, a[j:, j + 1 :])
+            a = a.at[j:, j + 1 :].set(updated_block)
+
+        norms = update_norms_exact(a, j)
+
+    return a, perm, norms, reflectors
+
+
+def apply_panel_to_trailing(
+    a: jnp.ndarray,
+    reflectors,
+    panel_end: int,
+) -> jnp.ndarray:
+    """
+    Apply the accumulated panel reflectors to the trailing matrix.
+
+    Reference version:
+    - this is effectively redundant because the trailing matrix was already
+      updated at each step.
+
+    Later blocked version:
+    - this becomes the main trailing update step.
+    - eventually this should become a compact block update rather than a loop
+      over individual reflectors.
+    """
+    _ = reflectors
+    _ = panel_end
+    return a
+
+
+def blocked_pivoted_qr(
+    a: jnp.ndarray,
+    panel_size: int,
+    pivot_mode: PivotMode = "largest",
+):
+    """
+    Top-level blocked pivoted QR driver.
+
+    Reference version:
+    - initialize permutation and exact norms
+    - factor panels one at a time
+    - because the trailing matrix is updated immediately, panel-end trailing
+      updates are conceptually present but practically redundant
+
+    Later blocked version:
+    - exact same top-level structure
+    - the difference is that trailing updates move out of the inner loop and
+      happen only once per completed panel
+    """
+    a = jnp.asarray(a)
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    if panel_size <= 0:
+        raise ValueError(f"panel_size must be positive, got {panel_size}")
+
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+
+    work = a
+    limit = min(a.shape[0], a.shape[1])
+    for k in range(0, limit, panel_size):
+        work, perm, norms, reflectors = factor_panel(
+            a=work,
+            perm=perm,
+            norms=norms,
+            k=k,
+            panel_size=panel_size,
+            pivot_mode=pivot_mode,
+        )
+        panel_end = min(k + panel_size, limit)
+        work = apply_panel_to_trailing(work, reflectors, panel_end)
+
+    return work, perm
