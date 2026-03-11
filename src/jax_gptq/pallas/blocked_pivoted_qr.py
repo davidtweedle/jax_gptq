@@ -259,15 +259,10 @@ def factor_panel(
         v, tau, alpha = householder_vector(a[j:, j])
         reflectors.append((j, v, tau))
 
-        col = a[j:, j]
-        col = col.at[0].set(alpha)
-        if col.shape[0] > 1:
-            col = col.at[1:].set(v[1:])
-        a = a.at[j:, j].set(col)
-
-        if j + 1 < a.shape[1]:
-            updated_block = apply_reflector_to_block(v, tau, a[j:, j + 1 :])
-            a = a.at[j:, j + 1 :].set(updated_block)
+        updated_block = apply_reflector_to_block(v, tau, a[j:, j:])
+        updated_block = updated_block.at[1:, 0].set(0)
+        updated_block = updated_block.at[0, 0].set(alpha)
+        a = a.at[j:, j:].set(updated_block)
 
         norms = update_norms_exact(a, j)
 
