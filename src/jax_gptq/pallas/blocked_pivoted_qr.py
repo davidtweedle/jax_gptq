@@ -139,7 +139,7 @@ def householder_vector(x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.nd
         beta = x0 - alpha
         v = x / beta
         v = v.at[0].set(1)
-        tau = beta / alpha
+        tau = -beta / alpha
         return v, tau, alpha
 
     return jax.lax.cond(sigma == 0, trivial_case, reflector_case, operand=None)
