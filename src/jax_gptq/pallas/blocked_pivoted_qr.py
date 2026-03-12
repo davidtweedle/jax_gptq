@@ -396,6 +396,21 @@ def apply_compact_panel_to_block(
     return block - panel.y @ w
 
 
+def compute_exposed_trailing_row_from_compact_panel(
+    panel: CompactPanel,
+    trailing_block: jnp.ndarray,
+    row_index: int,
+) -> jnp.ndarray:
+    """
+    Compute one exposed row of the transformed trailing block using the compact
+    panel representation.
+
+    This is the compact counterpart to `compute_exposed_trailing_row`.
+    """
+    transformed = apply_compact_panel_to_block(panel, trailing_block)
+    return transformed[row_index, :]
+
+
 def update_norms_from_reflectors(
     a: jnp.ndarray,
     j: int,

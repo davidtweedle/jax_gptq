@@ -7,6 +7,7 @@ from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_reflector_to_block,
     blocked_pivoted_qr,
     build_compact_panel,
+    compute_exposed_trailing_row_from_compact_panel,
     compute_exposed_trailing_row,
     factor_panel,
 )
@@ -258,4 +259,35 @@ def test_apply_compact_panel_matches_reflector_replay_on_block() -> None:
         expected = expected.at[j:, :].set(updated)
 
     actual = apply_compact_panel_to_block(panel, block)
+    assert jnp.allclose(actual, expected, atol=1e-4)
+
+
+def test_compact_panel_exposed_row_matches_exact_helper() -> None:
+    a = jnp.array(
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+    work, _, _, reflectors = factor_panel(
+        a=a,
+        perm=perm,
+        norms=norms,
+        k=0,
+        panel_size=2,
+        pivot_mode="largest",
+    )
+
+    panel = build_compact_panel(reflectors, panel_start=0, panel_end=2, n_rows=a.shape[0])
+    start_col = 2
+    row_index = 1
+    trailing_block = work[:, start_col:]
+
+    expected = compute_exposed_trailing_row(work, reflectors, row_index, start_col)
+    actual = compute_exposed_trailing_row_from_compact_panel(panel, trailing_block, row_index)
     assert jnp.allclose(actual, expected, atol=1e-4)
