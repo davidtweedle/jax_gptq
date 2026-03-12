@@ -597,9 +597,10 @@ def apply_panel_to_trailing(
     if panel_end >= a.shape[1]:
         return a
 
-    for j, v, tau in reflectors:
-        updated = apply_reflector_to_block(v, tau, a[j:, panel_end:])
-        a = a.at[j:, panel_end:].set(updated)
+    panel_start = reflectors[0][0] if reflectors else panel_end
+    panel = build_compact_panel(reflectors, panel_start=panel_start, panel_end=panel_end, n_rows=a.shape[0])
+    updated = apply_compact_panel_to_block(panel, a[:, panel_end:])
+    a = a.at[:, panel_end:].set(updated)
     return a
 
 
