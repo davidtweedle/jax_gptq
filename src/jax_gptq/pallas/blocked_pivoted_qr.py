@@ -202,6 +202,54 @@ def update_norms_exact(a: jnp.ndarray, j: int) -> jnp.ndarray:
     return norms
 
 
+def apply_reflectors_to_trailing_view(
+    a: jnp.ndarray,
+    reflectors,
+    start_col: int,
+) -> jnp.ndarray:
+    """
+    Form an exact temporary view of the trailing matrix after applying the
+    accumulated panel reflectors.
+
+    This is a correctness bridge between the fully unblocked reference and the
+    eventual blocked implementation:
+    - the stored trailing matrix remains deferred
+    - but pivot scoring still sees the exact transformed trailing columns
+
+    Later blocked version:
+    - replace this exact materialization with norm metadata updates and
+      on-demand application of panel reflectors only to the selected incoming
+      pivot column.
+    """
+    trailing = a[:, start_col:]
+    for j, v, tau in reflectors:
+        updated = apply_reflector_to_block(v, tau, trailing[j:, :])
+        trailing = trailing.at[j:, :].set(updated)
+    return trailing
+
+
+def update_norms_from_reflectors(
+    a: jnp.ndarray,
+    j: int,
+    reflectors,
+) -> jnp.ndarray:
+    """
+    Exact norm update for the blocked-structure reference path.
+
+    Unlike `update_norms_exact`, this computes norms from a temporary trailing
+    view with the accumulated panel reflectors applied.
+    """
+    a = jnp.asarray(a)
+    norms = jnp.zeros((a.shape[1],), dtype=a.dtype)
+    if j + 1 >= a.shape[1]:
+        return norms
+
+    trailing = apply_reflectors_to_trailing_view(a, reflectors, j + 1)
+    trailing_norms = jnp.linalg.norm(trailing[j + 1 :, :], axis=0)
+    norms = norms.at[j + 1 :].set(trailing_norms)
+    return norms
+
+
 def factor_panel(
     a: jnp.ndarray,
     perm: jnp.ndarray,
@@ -259,12 +307,12 @@ def factor_panel(
         v, tau, alpha = householder_vector(a[j:, j])
         reflectors.append((j, v, tau))
 
-        updated_block = apply_reflector_to_block(v, tau, a[j:, j:])
+        updated_block = apply_reflector_to_block(v, tau, a[j:, j:panel_end])
         updated_block = updated_block.at[1:, 0].set(0)
         updated_block = updated_block.at[0, 0].set(alpha)
-        a = a.at[j:, j:].set(updated_block)
+        a = a.at[j:, j:panel_end].set(updated_block)
 
-        norms = update_norms_exact(a, j)
+        norms = update_norms_from_reflectors(a, j, reflectors)
 
     return a, perm, norms, reflectors
 
