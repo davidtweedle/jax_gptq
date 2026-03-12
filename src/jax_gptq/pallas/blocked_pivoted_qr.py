@@ -228,6 +228,40 @@ def apply_reflectors_to_trailing_view(
     return trailing
 
 
+def apply_reflectors_to_column(
+    col: jnp.ndarray,
+    global_col_index: int,
+    reflectors,
+) -> jnp.ndarray:
+    """
+    Apply the accumulated panel reflectors to one incoming trailing column.
+
+    This is the operation the eventual blocked algorithm will need when a new
+    pivot column is selected from the deferred trailing matrix and must be
+    brought into the current transformed basis before entering the panel.
+
+    Current usage:
+    - helper only; not yet wired into pivot selection
+
+    Later blocked version:
+    - this should replace the expensive exact trailing-view materialization for
+      selected incoming columns.
+    """
+    col = jnp.asarray(col)
+    if col.ndim != 1:
+        raise ValueError(f"col must be 1D, got {col.shape}")
+    if not 0 <= global_col_index < col.shape[0] + global_col_index:
+        # The helper only needs the index for row alignment with stored
+        # reflectors; keep the interface explicit even though the check is loose.
+        pass
+
+    out = col
+    for j, v, tau in reflectors:
+        updated = apply_reflector_to_block(v, tau, out[j:].reshape(-1, 1)).reshape(-1)
+        out = out.at[j:].set(updated)
+    return out
+
+
 def update_norms_from_reflectors(
     a: jnp.ndarray,
     j: int,
