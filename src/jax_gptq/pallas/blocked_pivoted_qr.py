@@ -42,6 +42,7 @@ class CompactPanel:
     panel_end: int
     y: jnp.ndarray
     tau: jnp.ndarray
+    t: jnp.ndarray
 
 
 def choose_pivot(norms: jnp.ndarray, j: int, pivot_mode: PivotMode) -> int:
@@ -321,8 +322,8 @@ def build_compact_panel(
     - stores the corresponding scalar coefficients in `tau`
 
     Later blocked version:
-    - extend this to build the triangular coupling matrix used in a full WY
-      representation.
+    - use this compact form directly for panel-to-trailing updates and exposed
+      row extraction.
     """
     if not 0 <= panel_start <= panel_end <= n_rows:
         raise ValueError(
@@ -342,11 +343,23 @@ def build_compact_panel(
         y = y.at[j:, local_idx].set(v)
         tau = tau.at[local_idx].set(tau_j)
 
+    t = jnp.zeros((width, width), dtype=jnp.float32)
+    for i in range(width):
+        t = t.at[i, i].set(tau[i])
+        if i == 0:
+            continue
+        y_i = y[:, i]
+        w = -tau[i] * (y[:, :i].T @ y_i)
+        if i > 1:
+            w = t[:i, :i] @ w
+        t = t.at[:i, i].set(w)
+
     return CompactPanel(
         panel_start=panel_start,
         panel_end=panel_end,
         y=y,
         tau=tau,
+        t=t,
     )
 
 
