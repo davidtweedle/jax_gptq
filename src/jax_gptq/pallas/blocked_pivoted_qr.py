@@ -363,6 +363,39 @@ def build_compact_panel(
     )
 
 
+def apply_compact_panel_to_block(
+    panel: CompactPanel,
+    block: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Apply the compact panel transform to a block.
+
+    With the current convention, the panel transform is represented as
+
+        Q_panel = I - Y T Y^T
+
+    and this helper applies `Q_panel` on the left to `block`.
+
+    Current usage:
+    - parity helper only
+
+    Later blocked version:
+    - use this in place of reflector-by-reflector replay for panel-to-trailing
+      updates and exposed-row extraction.
+    """
+    block = jnp.asarray(block)
+    if block.ndim != 2:
+        raise ValueError(f"block must be 2D, got {block.shape}")
+    if block.shape[0] != panel.y.shape[0]:
+        raise ValueError(
+            f"block row dimension must match panel rows, got {block.shape[0]} and {panel.y.shape[0]}"
+        )
+
+    w = panel.y.T @ block
+    w = panel.t.T @ w
+    return block - panel.y @ w
+
+
 def update_norms_from_reflectors(
     a: jnp.ndarray,
     j: int,

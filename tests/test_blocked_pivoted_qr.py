@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 
 from jax_gptq.pallas.blocked_pivoted_qr import (
+    apply_compact_panel_to_block,
     apply_reflectors_to_column,
     apply_reflectors_to_trailing_view,
     apply_reflector_to_block,
@@ -225,3 +226,36 @@ def test_build_compact_panel_t_is_upper_triangular_with_tau_on_diagonal() -> Non
     panel = build_compact_panel(reflectors, panel_start=0, panel_end=2, n_rows=a.shape[0])
     assert jnp.allclose(panel.t, jnp.triu(panel.t), atol=1e-6)
     assert jnp.allclose(jnp.diag(panel.t), panel.tau, atol=1e-6)
+
+
+def test_apply_compact_panel_matches_reflector_replay_on_block() -> None:
+    a = jnp.array(
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+    _, _, _, reflectors = factor_panel(
+        a=a,
+        perm=perm,
+        norms=norms,
+        k=0,
+        panel_size=2,
+        pivot_mode="largest",
+    )
+
+    panel = build_compact_panel(reflectors, panel_start=0, panel_end=2, n_rows=a.shape[0])
+    block = a[:, 2:]
+
+    expected = block
+    for j, v, tau in reflectors:
+        updated = apply_reflector_to_block(v, tau, expected[j:, :])
+        expected = expected.at[j:, :].set(updated)
+
+    actual = apply_compact_panel_to_block(panel, block)
+    assert jnp.allclose(actual, expected, atol=1e-4)
