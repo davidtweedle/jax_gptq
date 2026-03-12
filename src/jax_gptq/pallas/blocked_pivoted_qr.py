@@ -479,7 +479,7 @@ def update_trailing_norm_metadata_in_panel(
     a: jnp.ndarray,
     norms: jnp.ndarray,
     j: int,
-    reflectors,
+    panel: CompactPanel,
     panel_end: int,
 ) -> jnp.ndarray:
     """
@@ -487,14 +487,14 @@ def update_trailing_norm_metadata_in_panel(
 
     Current behavior:
     - uses the exact exposed trailing row induced by the accumulated panel
-      reflectors
+      compact panel
     - updates remaining panel-column norms directly from the explicitly updated
       panel block
     - updates deferred trailing-column norms from the exact exposed row
 
     Later blocked version:
     - replace this with true in-panel norm downdates so we do not need to
-      compute the exposed row exactly from the full reflector sequence.
+      compute the exposed row by rebuilding the compact panel every step.
     """
     a = jnp.asarray(a)
     norms = jnp.asarray(norms)
@@ -516,12 +516,6 @@ def update_trailing_norm_metadata_in_panel(
         norms = norms.at[next_col:panel_stop].set(panel_norms)
 
     if panel_stop < a.shape[1]:
-        panel = build_compact_panel(
-            reflectors,
-            panel_start=reflectors[0][0] if reflectors else j,
-            panel_end=panel_end,
-            n_rows=a.shape[0],
-        )
         exposed_row = compute_exposed_trailing_row_from_compact_panel(
             panel,
             a[:, panel_stop:],
@@ -583,6 +577,7 @@ def factor_panel(
 
     panel_end = min(k + panel_size, min(a.shape[0], a.shape[1]))
     reflectors: list[tuple[int, jnp.ndarray, jnp.ndarray]] = []
+    panel = build_compact_panel(reflectors, panel_start=k, panel_end=k, n_rows=a.shape[0])
 
     for j in range(k, panel_end):
         pivot_col = choose_pivot(norms, j, pivot_mode)
@@ -590,15 +585,16 @@ def factor_panel(
 
         v, tau, alpha = householder_vector(a[j:, j])
         reflectors.append((j, v, tau))
+        panel = build_compact_panel(reflectors, panel_start=k, panel_end=j + 1, n_rows=a.shape[0])
 
         updated_block = apply_reflector_to_block(v, tau, a[j:, j:panel_end])
         updated_block = updated_block.at[1:, 0].set(0)
         updated_block = updated_block.at[0, 0].set(alpha)
         a = a.at[j:, j:panel_end].set(updated_block)
 
-        norms = update_trailing_norm_metadata_in_panel(a, norms, j, reflectors, panel_end)
+        norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
 
-    return a, perm, norms, reflectors
+    return a, perm, norms, reflectors, panel
 
 
 def apply_panel_to_trailing(
@@ -622,8 +618,6 @@ def apply_panel_to_trailing(
     if panel_end >= a.shape[1]:
         return a
 
-    panel_start = reflectors[0][0] if reflectors else panel_end
-    panel = build_compact_panel(reflectors, panel_start=panel_start, panel_end=panel_end, n_rows=a.shape[0])
     updated = apply_compact_panel_to_block(panel, a[:, panel_end:])
     a = a.at[:, panel_end:].set(updated)
     return a
@@ -660,7 +654,7 @@ def blocked_pivoted_qr(
     work = a
     limit = min(a.shape[0], a.shape[1])
     for k in range(0, limit, panel_size):
-        work, perm, norms, reflectors = factor_panel(
+        work, perm, norms, reflectors, panel = factor_panel(
             a=work,
             perm=perm,
             norms=norms,
@@ -669,7 +663,7 @@ def blocked_pivoted_qr(
             pivot_mode=pivot_mode,
         )
         panel_end = min(k + panel_size, limit)
-        work = apply_panel_to_trailing(work, reflectors, panel_end)
+        work = apply_panel_to_trailing(work, panel, panel_end)
         norms = refresh_trailing_norm_metadata(work, panel_end)
 
     return work, perm

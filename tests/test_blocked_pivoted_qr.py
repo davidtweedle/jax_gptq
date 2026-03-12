@@ -99,7 +99,7 @@ def test_factor_panel_reconstructs_pivoted_input() -> None:
     )
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = jnp.linalg.norm(a, axis=0)
-    work, perm, _, reflectors = factor_panel(
+    work, perm, _, reflectors, _ = factor_panel(
         a=a,
         perm=perm,
         norms=norms,
@@ -127,7 +127,7 @@ def test_apply_reflectors_to_column_matches_trailing_view_column() -> None:
     )
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = jnp.linalg.norm(a, axis=0)
-    work, perm, _, reflectors = factor_panel(
+    work, perm, _, reflectors, _ = factor_panel(
         a=a,
         perm=perm,
         norms=norms,
@@ -155,7 +155,7 @@ def test_compute_exposed_trailing_row_matches_trailing_view_row() -> None:
     )
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = jnp.linalg.norm(a, axis=0)
-    work, perm, _, reflectors = factor_panel(
+    work, perm, _, reflectors, _ = factor_panel(
         a=a,
         perm=perm,
         norms=norms,
@@ -184,7 +184,7 @@ def test_build_compact_panel_packs_reflectors_in_global_rows() -> None:
     )
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = jnp.linalg.norm(a, axis=0)
-    _, _, _, reflectors = factor_panel(
+    _, _, _, reflectors, _ = factor_panel(
         a=a,
         perm=perm,
         norms=norms,
@@ -215,7 +215,7 @@ def test_build_compact_panel_t_is_upper_triangular_with_tau_on_diagonal() -> Non
     )
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = jnp.linalg.norm(a, axis=0)
-    _, _, _, reflectors = factor_panel(
+    _, _, _, reflectors, _ = factor_panel(
         a=a,
         perm=perm,
         norms=norms,
@@ -241,7 +241,7 @@ def test_apply_compact_panel_matches_reflector_replay_on_block() -> None:
     )
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = jnp.linalg.norm(a, axis=0)
-    _, _, _, reflectors = factor_panel(
+    _, _, _, reflectors, _ = factor_panel(
         a=a,
         perm=perm,
         norms=norms,
@@ -274,7 +274,7 @@ def test_compact_panel_exposed_row_matches_exact_helper() -> None:
     )
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = jnp.linalg.norm(a, axis=0)
-    work, _, _, reflectors = factor_panel(
+    work, _, _, reflectors, _ = factor_panel(
         a=a,
         perm=perm,
         norms=norms,
