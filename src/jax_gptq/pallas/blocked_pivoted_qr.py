@@ -27,12 +27,21 @@ Later blocked version:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 import jax
 import jax.numpy as jnp
 
 PivotMode = Literal["largest", "smallest"]
+
+
+@dataclass(frozen=True)
+class CompactPanel:
+    panel_start: int
+    panel_end: int
+    y: jnp.ndarray
+    tau: jnp.ndarray
 
 
 def choose_pivot(norms: jnp.ndarray, j: int, pivot_mode: PivotMode) -> int:
@@ -295,6 +304,50 @@ def compute_exposed_trailing_row(
         updated = apply_reflector_to_block(v, tau, trailing[j:, :])
         trailing = trailing.at[j:, :].set(updated)
     return trailing[row_index, :]
+
+
+def build_compact_panel(
+    reflectors,
+    panel_start: int,
+    panel_end: int,
+    n_rows: int,
+) -> CompactPanel:
+    """
+    Build a compact panel description from the stored reflector list.
+
+    Current behavior:
+    - stores the reflector vectors in a dense `Y` matrix, one column per panel
+      reflector, aligned to global row indices
+    - stores the corresponding scalar coefficients in `tau`
+
+    Later blocked version:
+    - extend this to build the triangular coupling matrix used in a full WY
+      representation.
+    """
+    if not 0 <= panel_start <= panel_end <= n_rows:
+        raise ValueError(
+            f"expected 0 <= panel_start <= panel_end <= n_rows, got "
+            f"{panel_start}, {panel_end}, {n_rows}"
+        )
+
+    width = panel_end - panel_start
+    y = jnp.zeros((n_rows, width), dtype=jnp.float32)
+    tau = jnp.zeros((width,), dtype=jnp.float32)
+
+    for local_idx, (j, v, tau_j) in enumerate(reflectors):
+        if not panel_start <= j < panel_end:
+            raise ValueError(
+                f"reflector row index {j} is outside panel [{panel_start}, {panel_end})"
+            )
+        y = y.at[j:, local_idx].set(v)
+        tau = tau.at[local_idx].set(tau_j)
+
+    return CompactPanel(
+        panel_start=panel_start,
+        panel_end=panel_end,
+        y=y,
+        tau=tau,
+    )
 
 
 def update_norms_from_reflectors(

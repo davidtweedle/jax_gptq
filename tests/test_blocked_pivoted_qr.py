@@ -5,6 +5,7 @@ from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_reflectors_to_trailing_view,
     apply_reflector_to_block,
     blocked_pivoted_qr,
+    build_compact_panel,
     compute_exposed_trailing_row,
     factor_panel,
 )
@@ -167,3 +168,34 @@ def test_compute_exposed_trailing_row_matches_trailing_view_row() -> None:
     expected = trailing_view[row_index, :]
     actual = compute_exposed_trailing_row(work, reflectors, row_index, start_col)
     assert jnp.allclose(actual, expected, atol=1e-4)
+
+
+def test_build_compact_panel_packs_reflectors_in_global_rows() -> None:
+    a = jnp.array(
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+    _, _, _, reflectors = factor_panel(
+        a=a,
+        perm=perm,
+        norms=norms,
+        k=0,
+        panel_size=2,
+        pivot_mode="largest",
+    )
+
+    panel = build_compact_panel(reflectors, panel_start=0, panel_end=2, n_rows=a.shape[0])
+    assert panel.y.shape == (a.shape[0], 2)
+    assert panel.tau.shape == (2,)
+
+    for idx, (j, v, tau_j) in enumerate(reflectors):
+        expected = jnp.zeros((a.shape[0],), dtype=a.dtype).at[j:].set(v)
+        assert jnp.allclose(panel.y[:, idx], expected, atol=1e-6)
+        assert jnp.allclose(panel.tau[idx], tau_j, atol=1e-6)
