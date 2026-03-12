@@ -366,6 +366,7 @@ def update_trailing_norm_metadata_in_panel(
     norms: jnp.ndarray,
     j: int,
     reflectors,
+    panel_end: int,
 ) -> jnp.ndarray:
     """
     Update trailing norm metadata during panel factorization.
@@ -373,7 +374,9 @@ def update_trailing_norm_metadata_in_panel(
     Current behavior:
     - uses the exact exposed trailing row induced by the accumulated panel
       reflectors
-    - updates trailing norm metadata from that exposed row
+    - updates remaining panel-column norms directly from the explicitly updated
+      panel block
+    - updates deferred trailing-column norms from the exact exposed row
 
     Later blocked version:
     - replace this with true in-panel norm downdates so we do not need to
@@ -385,14 +388,25 @@ def update_trailing_norm_metadata_in_panel(
         raise ValueError(f"a must be 2D, got {a.shape}")
     if norms.ndim != 1 or norms.shape[0] != a.shape[1]:
         raise ValueError(f"norms must be shape ({a.shape[1]},), got {norms.shape}")
+    if not 0 <= panel_end <= a.shape[1]:
+        raise ValueError(f"panel_end must be in [0, {a.shape[1]}], got {panel_end}")
     if j + 1 >= a.shape[1]:
         return norms
 
-    exposed_row = compute_exposed_trailing_row(a, reflectors, j, j + 1)
-    current_sq = jnp.square(norms[j + 1 :])
-    updated_sq = jnp.maximum(current_sq - jnp.square(exposed_row), 0)
-    updated = jnp.sqrt(updated_sq)
-    norms = norms.at[j + 1 :].set(updated)
+    next_col = j + 1
+    panel_stop = min(panel_end, a.shape[1])
+
+    if next_col < panel_stop:
+        panel_block = a[next_col:, next_col:panel_stop]
+        panel_norms = jnp.linalg.norm(panel_block, axis=0)
+        norms = norms.at[next_col:panel_stop].set(panel_norms)
+
+    if panel_stop < a.shape[1]:
+        exposed_row = compute_exposed_trailing_row(a, reflectors, j, panel_stop)
+        current_sq = jnp.square(norms[panel_stop:])
+        updated_sq = jnp.maximum(current_sq - jnp.square(exposed_row), 0)
+        updated = jnp.sqrt(updated_sq)
+        norms = norms.at[panel_stop:].set(updated)
     return norms
 
 
@@ -458,7 +472,7 @@ def factor_panel(
         updated_block = updated_block.at[0, 0].set(alpha)
         a = a.at[j:, j:panel_end].set(updated_block)
 
-        norms = update_trailing_norm_metadata_in_panel(a, norms, j, reflectors)
+        norms = update_trailing_norm_metadata_in_panel(a, norms, j, reflectors, panel_end)
 
     return a, perm, norms, reflectors
 
