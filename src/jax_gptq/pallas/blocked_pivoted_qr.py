@@ -516,7 +516,17 @@ def update_trailing_norm_metadata_in_panel(
         norms = norms.at[next_col:panel_stop].set(panel_norms)
 
     if panel_stop < a.shape[1]:
-        exposed_row = compute_exposed_trailing_row(a, reflectors, j, panel_stop)
+        panel = build_compact_panel(
+            reflectors,
+            panel_start=reflectors[0][0] if reflectors else j,
+            panel_end=panel_end,
+            n_rows=a.shape[0],
+        )
+        exposed_row = compute_exposed_trailing_row_from_compact_panel(
+            panel,
+            a[:, panel_stop:],
+            j,
+        )
         current_sq = jnp.square(norms[panel_stop:])
         updated_sq = jnp.maximum(current_sq - jnp.square(exposed_row), 0)
         updated = jnp.sqrt(updated_sq)
