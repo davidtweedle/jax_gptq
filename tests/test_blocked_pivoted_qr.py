@@ -5,6 +5,7 @@ from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_reflectors_to_trailing_view,
     apply_reflector_to_block,
     blocked_pivoted_qr,
+    compute_exposed_trailing_row,
     factor_panel,
 )
 
@@ -136,4 +137,33 @@ def test_apply_reflectors_to_column_matches_trailing_view_column() -> None:
     trailing_view = apply_reflectors_to_trailing_view(work, reflectors, start_col)
     expected = trailing_view[:, 0]
     actual = apply_reflectors_to_column(work[:, start_col], start_col, reflectors)
+    assert jnp.allclose(actual, expected, atol=1e-4)
+
+
+def test_compute_exposed_trailing_row_matches_trailing_view_row() -> None:
+    a = jnp.array(
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+    work, perm, _, reflectors = factor_panel(
+        a=a,
+        perm=perm,
+        norms=norms,
+        k=0,
+        panel_size=2,
+        pivot_mode="largest",
+    )
+
+    start_col = 2
+    row_index = 1
+    trailing_view = apply_reflectors_to_trailing_view(work, reflectors, start_col)
+    expected = trailing_view[row_index, :]
+    actual = compute_exposed_trailing_row(work, reflectors, row_index, start_col)
     assert jnp.allclose(actual, expected, atol=1e-4)

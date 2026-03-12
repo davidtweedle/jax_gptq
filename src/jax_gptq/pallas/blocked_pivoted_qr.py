@@ -262,6 +262,41 @@ def apply_reflectors_to_column(
     return out
 
 
+def compute_exposed_trailing_row(
+    a: jnp.ndarray,
+    reflectors,
+    row_index: int,
+    start_col: int,
+) -> jnp.ndarray:
+    """
+    Compute one exposed row of the transformed trailing block exactly.
+
+    This avoids materializing the full transformed trailing view when only a
+    single row is needed for norm downdates.
+
+    Current behavior:
+    - exact
+    - still applies the reflectors sequentially
+
+    Later blocked version:
+    - replace this reflector-by-reflector row extraction with a compact panel
+      representation (e.g. WY form) applied to the stale trailing block.
+    """
+    a = jnp.asarray(a)
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    if not 0 <= row_index < a.shape[0]:
+        raise ValueError(f"row_index must be in [0, {a.shape[0]}), got {row_index}")
+    if not 0 <= start_col <= a.shape[1]:
+        raise ValueError(f"start_col must be in [0, {a.shape[1]}], got {start_col}")
+
+    trailing = a[:, start_col:]
+    for j, v, tau in reflectors:
+        updated = apply_reflector_to_block(v, tau, trailing[j:, :])
+        trailing = trailing.at[j:, :].set(updated)
+    return trailing[row_index, :]
+
+
 def update_norms_from_reflectors(
     a: jnp.ndarray,
     j: int,
@@ -281,6 +316,78 @@ def update_norms_from_reflectors(
     trailing = apply_reflectors_to_trailing_view(a, reflectors, j + 1)
     trailing_norms = jnp.linalg.norm(trailing[j + 1 :, :], axis=0)
     norms = norms.at[j + 1 :].set(trailing_norms)
+    return norms
+
+
+def initialize_trailing_norm_metadata(a: jnp.ndarray) -> jnp.ndarray:
+    """
+    Initialize per-column trailing norm metadata from the current matrix state.
+
+    Metadata convention:
+    - `norms[c]` stores the norm of the active trailing portion of column `c`
+    - for the current fully synchronized reference state, this is simply the
+      full column norm
+
+    Later blocked version:
+    - this metadata will be downdated inside a panel without fully updating the
+      stored trailing matrix.
+    """
+    a = jnp.asarray(a)
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    return jnp.linalg.norm(a, axis=0)
+
+
+def refresh_trailing_norm_metadata(a: jnp.ndarray, start_row: int) -> jnp.ndarray:
+    """
+    Recompute exact trailing norm metadata from a synchronized matrix state.
+
+    This is the conservative metadata update used at panel boundaries for now.
+
+    Later blocked version:
+    - replace or supplement this with in-panel downdates based on the exposed
+      row contributions from each Householder step.
+    """
+    a = jnp.asarray(a)
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    if not 0 <= start_row <= a.shape[0]:
+        raise ValueError(f"start_row must be in [0, {a.shape[0]}], got {start_row}")
+
+    norms = jnp.zeros((a.shape[1],), dtype=a.dtype)
+    if start_row >= a.shape[0]:
+        return norms
+    norms = norms.at[:].set(jnp.linalg.norm(a[start_row:, :], axis=0))
+    return norms
+
+
+def update_trailing_norm_metadata_in_panel(
+    a: jnp.ndarray,
+    norms: jnp.ndarray,
+    j: int,
+    reflectors,
+) -> jnp.ndarray:
+    """
+    Update trailing norm metadata during panel factorization.
+
+    Current behavior:
+    - still exact
+    - uses the temporary transformed trailing view induced by the accumulated
+      panel reflectors
+
+    Later blocked version:
+    - replace this with true in-panel norm downdates so we do not need to
+      materialize the exact transformed trailing view.
+    """
+    a = jnp.asarray(a)
+    norms = jnp.asarray(norms)
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    if norms.ndim != 1 or norms.shape[0] != a.shape[1]:
+        raise ValueError(f"norms must be shape ({a.shape[1]},), got {norms.shape}")
+
+    updated = update_norms_from_reflectors(a, j, reflectors)
+    norms = norms.at[j + 1 :].set(updated[j + 1 :])
     return norms
 
 
@@ -346,7 +453,7 @@ def factor_panel(
         updated_block = updated_block.at[0, 0].set(alpha)
         a = a.at[j:, j:panel_end].set(updated_block)
 
-        norms = update_norms_from_reflectors(a, j, reflectors)
+        norms = update_trailing_norm_metadata_in_panel(a, norms, j, reflectors)
 
     return a, perm, norms, reflectors
 
@@ -404,7 +511,7 @@ def blocked_pivoted_qr(
         raise ValueError(f"panel_size must be positive, got {panel_size}")
 
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
-    norms = jnp.linalg.norm(a, axis=0)
+    norms = initialize_trailing_norm_metadata(a)
 
     work = a
     limit = min(a.shape[0], a.shape[1])
@@ -419,5 +526,6 @@ def blocked_pivoted_qr(
         )
         panel_end = min(k + panel_size, limit)
         work = apply_panel_to_trailing(work, reflectors, panel_end)
+        norms = refresh_trailing_norm_metadata(work, panel_end)
 
     return work, perm
