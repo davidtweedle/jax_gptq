@@ -371,13 +371,13 @@ def update_trailing_norm_metadata_in_panel(
     Update trailing norm metadata during panel factorization.
 
     Current behavior:
-    - still exact
-    - uses the temporary transformed trailing view induced by the accumulated
-      panel reflectors
+    - uses the exact exposed trailing row induced by the accumulated panel
+      reflectors
+    - updates trailing norm metadata from that exposed row
 
     Later blocked version:
     - replace this with true in-panel norm downdates so we do not need to
-      materialize the exact transformed trailing view.
+      compute the exposed row exactly from the full reflector sequence.
     """
     a = jnp.asarray(a)
     norms = jnp.asarray(norms)
@@ -385,9 +385,14 @@ def update_trailing_norm_metadata_in_panel(
         raise ValueError(f"a must be 2D, got {a.shape}")
     if norms.ndim != 1 or norms.shape[0] != a.shape[1]:
         raise ValueError(f"norms must be shape ({a.shape[1]},), got {norms.shape}")
+    if j + 1 >= a.shape[1]:
+        return norms
 
-    updated = update_norms_from_reflectors(a, j, reflectors)
-    norms = norms.at[j + 1 :].set(updated[j + 1 :])
+    exposed_row = compute_exposed_trailing_row(a, reflectors, j, j + 1)
+    current_sq = jnp.square(norms[j + 1 :])
+    updated_sq = jnp.maximum(current_sq - jnp.square(exposed_row), 0)
+    updated = jnp.sqrt(updated_sq)
+    norms = norms.at[j + 1 :].set(updated)
     return norms
 
 
