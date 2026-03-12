@@ -334,8 +334,13 @@ def apply_panel_to_trailing(
     - eventually this should become a compact block update rather than a loop
       over individual reflectors.
     """
-    _ = reflectors
-    _ = panel_end
+    a = jnp.asarray(a)
+    if panel_end >= a.shape[1]:
+        return a
+
+    for j, v, tau in reflectors:
+        updated = apply_reflector_to_block(v, tau, a[j:, panel_end:])
+        a = a.at[j:, panel_end:].set(updated)
     return a
 
 
