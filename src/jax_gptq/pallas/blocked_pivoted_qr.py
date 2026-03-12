@@ -599,7 +599,7 @@ def factor_panel(
 
 def apply_panel_to_trailing(
     a: jnp.ndarray,
-    reflectors,
+    panel: CompactPanel,
     panel_end: int,
 ) -> jnp.ndarray:
     """
