@@ -707,7 +707,13 @@ def factor_panel(
     panel_end = state.panel_end
     reflectors: list[tuple[int, jnp.ndarray, jnp.ndarray]] = []
     panel_state = state
-    panel = build_compact_panel(reflectors, panel_start=k, panel_end=k, n_rows=a.shape[0])
+    panel = CompactPanel(
+        panel_start=k,
+        panel_end=k,
+        y=panel_state.y,
+        tau=panel_state.tau,
+        t=panel_state.t,
+    )
 
     for j in range(k, panel_end):
         if pivot_mode == "smallest":
@@ -747,7 +753,13 @@ def factor_panel(
         v, tau, alpha = householder_vector(a[j:, j])
         reflectors.append((j, v, tau))
         panel_state = append_reflector_to_panel_state(panel_state, j, v, tau)
-        panel = build_compact_panel(reflectors, panel_start=k, panel_end=j + 1, n_rows=a.shape[0])
+        panel = CompactPanel(
+            panel_start=k,
+            panel_end=k + panel_state.active_cols + 1,
+            y=panel_state.y,
+            tau=panel_state.tau,
+            t=panel_state.t,
+        )
 
         updated_block = apply_reflector_to_block(v, tau, a[j:, j:panel_end])
         updated_block = updated_block.at[1:, 0].set(0)
