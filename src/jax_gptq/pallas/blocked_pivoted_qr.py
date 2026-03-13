@@ -713,6 +713,19 @@ def factor_panel(
         if pivot_mode == "smallest":
             trailing_norms = norms[j:]
             if not bool(jnp.any(trailing_norms > 1e-12)):
+                panel_state = PanelState(
+                    a=panel_state.a,
+                    perm=panel_state.perm,
+                    norms=panel_state.norms,
+                    y=panel_state.y,
+                    tau=panel_state.tau,
+                    t=panel_state.t,
+                    k=panel_state.k,
+                    j=j,
+                    panel_end=panel_state.panel_end,
+                    active_cols=panel_state.active_cols,
+                    done=True,
+                )
                 break
 
         pivot_col = choose_pivot(norms, j, pivot_mode)
@@ -725,7 +738,7 @@ def factor_panel(
             tau=panel_state.tau,
             t=panel_state.t,
             k=panel_state.k,
-            j=panel_state.j,
+            j=j,
             panel_end=panel_state.panel_end,
             active_cols=panel_state.active_cols,
             done=panel_state.done,
@@ -740,8 +753,34 @@ def factor_panel(
         updated_block = updated_block.at[1:, 0].set(0)
         updated_block = updated_block.at[0, 0].set(alpha)
         a = a.at[j:, j:panel_end].set(updated_block)
+        panel_state = PanelState(
+            a=a,
+            perm=perm,
+            norms=norms,
+            y=panel_state.y,
+            tau=panel_state.tau,
+            t=panel_state.t,
+            k=panel_state.k,
+            j=j + 1,
+            panel_end=panel_state.panel_end,
+            active_cols=panel_state.active_cols + 1,
+            done=panel_state.done,
+        )
 
         norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
+        panel_state = PanelState(
+            a=a,
+            perm=perm,
+            norms=norms,
+            y=panel_state.y,
+            tau=panel_state.tau,
+            t=panel_state.t,
+            k=panel_state.k,
+            j=panel_state.j,
+            panel_end=panel_state.panel_end,
+            active_cols=panel_state.active_cols,
+            done=panel_state.done,
+        )
 
     final_panel = CompactPanel(
         panel_start=k,
