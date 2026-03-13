@@ -743,7 +743,14 @@ def factor_panel(
 
         norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
 
-    return a, perm, norms, reflectors, panel
+    final_panel = CompactPanel(
+        panel_start=k,
+        panel_end=k + panel_state.active_cols,
+        y=panel_state.y,
+        tau=panel_state.tau,
+        t=panel_state.t,
+    )
+    return a, perm, norms, reflectors, final_panel
 
 
 def apply_panel_to_trailing(
