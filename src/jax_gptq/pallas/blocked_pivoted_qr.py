@@ -45,6 +45,70 @@ class CompactPanel:
     t: jnp.ndarray
 
 
+@dataclass(frozen=True)
+class PanelState:
+    a: jnp.ndarray
+    perm: jnp.ndarray
+    norms: jnp.ndarray
+    y: jnp.ndarray
+    tau: jnp.ndarray
+    t: jnp.ndarray
+    k: int
+    j: int
+    panel_end: int
+    active_cols: int
+    done: bool
+
+
+def init_panel_state(
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    k: int,
+    panel_size: int,
+) -> PanelState:
+    """
+    Initialize the mutable state for one panel factorization.
+
+    This mirrors the eventual Pallas kernel boundary:
+    - `a`, `perm`, `norms` are the evolving global work state
+    - `y`, `tau`, `t` are the incremental compact panel buffers
+    - `j` tracks the current in-panel step
+    - `active_cols` tracks the number of accepted pivots
+    - `done` allows early exit for rank-deficient `pivot_mode="smallest"`
+    """
+    a = jnp.asarray(a)
+    perm = jnp.asarray(perm)
+    norms = jnp.asarray(norms)
+
+    if a.ndim != 2:
+        raise ValueError(f"a must be 2D, got {a.shape}")
+    if perm.ndim != 1 or perm.shape[0] != a.shape[1]:
+        raise ValueError(f"perm must be shape ({a.shape[1]},), got {perm.shape}")
+    if norms.ndim != 1 or norms.shape[0] != a.shape[1]:
+        raise ValueError(f"norms must be shape ({a.shape[1]},), got {norms.shape}")
+    if panel_size <= 0:
+        raise ValueError(f"panel_size must be positive, got {panel_size}")
+    if not 0 <= k < min(a.shape[0], a.shape[1]):
+        raise ValueError(f"k must be in [0, {min(a.shape[0], a.shape[1])}), got {k}")
+
+    panel_end = min(k + panel_size, min(a.shape[0], a.shape[1]))
+    width = panel_end - k
+    return PanelState(
+        a=a,
+        perm=perm,
+        norms=norms,
+        y=jnp.zeros((a.shape[0], width), dtype=a.dtype),
+        tau=jnp.zeros((width,), dtype=a.dtype),
+        t=jnp.zeros((width, width), dtype=a.dtype),
+        k=k,
+        j=k,
+        panel_end=panel_end,
+        active_cols=0,
+        done=False,
+    )
+
+
 def choose_pivot(
     norms: jnp.ndarray,
     j: int,
@@ -369,6 +433,61 @@ def build_compact_panel(
     )
 
 
+def append_reflector_to_panel_state(
+    state: PanelState,
+    j: int,
+    v: jnp.ndarray,
+    tau_j: jnp.ndarray,
+) -> PanelState:
+    """
+    Incrementally append one reflector to the panel-state compact buffers.
+
+    This is the stateful counterpart to `build_compact_panel(...)`.
+    For now it only updates `y`, `tau`, and `t`; the caller still owns the
+    actual panel factorization logic and any consistency checks against the
+    reflector-list reference path.
+    """
+    v = jnp.asarray(v)
+    tau_j = jnp.asarray(tau_j)
+    if v.ndim != 1:
+        raise ValueError(f"v must be 1D, got {v.shape}")
+    if tau_j.ndim != 0:
+        raise ValueError(f"tau_j must be scalar, got {tau_j.shape}")
+    if not state.k <= j < state.panel_end:
+        raise ValueError(f"j must be in [{state.k}, {state.panel_end}), got {j}")
+    if state.y.shape[0] < j + v.shape[0]:
+        raise ValueError(
+            f"state.y row dimension is too small for reflector at row {j}: "
+            f"{state.y.shape[0]} < {j + v.shape[0]}"
+        )
+
+    local_idx = j - state.k
+    y = state.y.at[j:, local_idx].set(v)
+    tau = state.tau.at[local_idx].set(tau_j)
+    t = state.t.at[local_idx, local_idx].set(tau_j)
+
+    if local_idx > 0:
+        y_i = y[:, local_idx]
+        w = -tau_j * (y[:, :local_idx].T @ y_i)
+        if local_idx > 1:
+            w = t[:local_idx, :local_idx] @ w
+        t = t.at[:local_idx, local_idx].set(w)
+
+    return PanelState(
+        a=state.a,
+        perm=state.perm,
+        norms=state.norms,
+        y=y,
+        tau=tau,
+        t=t,
+        k=state.k,
+        j=state.j,
+        panel_end=state.panel_end,
+        active_cols=state.active_cols,
+        done=state.done,
+    )
+
+
 def apply_compact_panel_to_block(
     panel: CompactPanel,
     block: jnp.ndarray,
@@ -581,7 +700,11 @@ def factor_panel(
     if not 0 <= k < min(a.shape[0], a.shape[1]):
         raise ValueError(f"k must be in [0, {min(a.shape[0], a.shape[1])}), got {k}")
 
-    panel_end = min(k + panel_size, min(a.shape[0], a.shape[1]))
+    state = init_panel_state(a=a, perm=perm, norms=norms, k=k, panel_size=panel_size)
+    a = state.a
+    perm = state.perm
+    norms = state.norms
+    panel_end = state.panel_end
     reflectors: list[tuple[int, jnp.ndarray, jnp.ndarray]] = []
     panel = build_compact_panel(reflectors, panel_start=k, panel_end=k, n_rows=a.shape[0])
 

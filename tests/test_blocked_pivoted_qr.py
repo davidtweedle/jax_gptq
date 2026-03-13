@@ -5,11 +5,13 @@ from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_reflectors_to_column,
     apply_reflectors_to_trailing_view,
     apply_reflector_to_block,
+    append_reflector_to_panel_state,
     blocked_pivoted_qr,
     build_compact_panel,
     compute_exposed_trailing_row_from_compact_panel,
     compute_exposed_trailing_row,
     factor_panel,
+    init_panel_state,
 )
 
 
@@ -227,6 +229,37 @@ def test_build_compact_panel_t_is_upper_triangular_with_tau_on_diagonal() -> Non
     panel = build_compact_panel(reflectors, panel_start=0, panel_end=2, n_rows=a.shape[0])
     assert jnp.allclose(panel.t, jnp.triu(panel.t), atol=1e-6)
     assert jnp.allclose(jnp.diag(panel.t), panel.tau, atol=1e-6)
+
+
+def test_append_reflector_to_panel_state_matches_build_compact_panel() -> None:
+    a = jnp.array(
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+    _, _, _, reflectors, _ = factor_panel(
+        a=a,
+        perm=perm,
+        norms=norms,
+        k=0,
+        panel_size=2,
+        pivot_mode="largest",
+    )
+
+    state = init_panel_state(a=a, perm=perm, norms=norms, k=0, panel_size=2)
+    for j, v, tau_j in reflectors:
+        state = append_reflector_to_panel_state(state, j, v, tau_j)
+
+    panel = build_compact_panel(reflectors, panel_start=0, panel_end=2, n_rows=a.shape[0])
+    assert jnp.allclose(state.y, panel.y, atol=1e-6)
+    assert jnp.allclose(state.tau, panel.tau, atol=1e-6)
+    assert jnp.allclose(state.t, panel.t, atol=1e-6)
 
 
 def test_apply_compact_panel_matches_reflector_replay_on_block() -> None:
