@@ -45,7 +45,12 @@ class CompactPanel:
     t: jnp.ndarray
 
 
-def choose_pivot(norms: jnp.ndarray, j: int, pivot_mode: PivotMode) -> int:
+def choose_pivot(
+    norms: jnp.ndarray,
+    j: int,
+    pivot_mode: PivotMode,
+    zero_tol: float = 1e-12,
+) -> int:
     """
     Choose the next pivot column from columns j:n.
 
@@ -66,7 +71,8 @@ def choose_pivot(norms: jnp.ndarray, j: int, pivot_mode: PivotMode) -> int:
     if pivot_mode == "largest":
         pivot_offset = jnp.argmax(trailing_norms)
     elif pivot_mode == "smallest":
-        pivot_offset = jnp.argmin(trailing_norms)
+        masked_norms = jnp.where(trailing_norms > zero_tol, trailing_norms, jnp.inf)
+        pivot_offset = jnp.argmin(masked_norms)
     else:
         raise ValueError(f"unsupported pivot_mode={pivot_mode}")
     return int(j + pivot_offset)
@@ -580,6 +586,11 @@ def factor_panel(
     panel = build_compact_panel(reflectors, panel_start=k, panel_end=k, n_rows=a.shape[0])
 
     for j in range(k, panel_end):
+        if pivot_mode == "smallest":
+            trailing_norms = norms[j:]
+            if not bool(jnp.any(trailing_norms > 1e-12)):
+                break
+
         pivot_col = choose_pivot(norms, j, pivot_mode)
         a, perm, norms = swap_columns(a, perm, norms, j, pivot_col)
 
