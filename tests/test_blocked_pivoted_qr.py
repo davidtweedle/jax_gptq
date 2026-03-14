@@ -350,7 +350,11 @@ def test_factor_panel_pallas_matches_reference_factor_panel() -> None:
 
     for lhs, rhs in zip(expected[:3], actual[:3]):
         assert jnp.allclose(lhs, rhs, atol=1e-6)
-    assert expected[3] == actual[3]
+    assert len(expected[3]) == len(actual[3])
+    for (j_lhs, v_lhs, tau_lhs), (j_rhs, v_rhs, tau_rhs) in zip(expected[3], actual[3]):
+        assert j_lhs == j_rhs
+        assert jnp.allclose(v_lhs, v_rhs, atol=1e-6)
+        assert jnp.allclose(tau_lhs, tau_rhs, atol=1e-6)
     assert jnp.allclose(expected[4].y, actual[4].y, atol=1e-6)
     assert jnp.allclose(expected[4].tau, actual[4].tau, atol=1e-6)
     assert jnp.allclose(expected[4].t, actual[4].t, atol=1e-6)
