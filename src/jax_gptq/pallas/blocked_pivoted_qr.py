@@ -518,6 +518,33 @@ def update_panel_state_after_swap(
     )
 
 
+def update_panel_state_after_norms(
+    state: PanelState,
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+) -> PanelState:
+    """
+    Refresh the panel state after the in-panel norm metadata update.
+
+    This keeps the compact panel buffers and control state unchanged while
+    replacing the synchronized matrix/permutation/norm views.
+    """
+    return PanelState(
+        a=a,
+        perm=perm,
+        norms=norms,
+        y=state.y,
+        tau=state.tau,
+        t=state.t,
+        k=state.k,
+        j=state.j,
+        panel_end=state.panel_end,
+        active_cols=state.active_cols,
+        done=state.done,
+    )
+
+
 def apply_compact_panel_to_block(
     panel: CompactPanel,
     block: jnp.ndarray,
@@ -798,19 +825,7 @@ def factor_panel(
         )
 
         norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
-        panel_state = PanelState(
-            a=a,
-            perm=perm,
-            norms=norms,
-            y=panel_state.y,
-            tau=panel_state.tau,
-            t=panel_state.t,
-            k=panel_state.k,
-            j=panel_state.j,
-            panel_end=panel_state.panel_end,
-            active_cols=panel_state.active_cols,
-            done=panel_state.done,
-        )
+        panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
 
     final_panel = CompactPanel(
         panel_start=k,
