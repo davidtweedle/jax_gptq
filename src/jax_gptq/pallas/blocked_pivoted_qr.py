@@ -710,6 +710,84 @@ def update_trailing_norm_metadata_in_panel(
     return norms
 
 
+def panel_step(
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    reflectors,
+    panel_state: PanelState,
+    k: int,
+    j: int,
+    panel_end: int,
+    pivot_mode: PivotMode,
+):
+    """
+    Execute one panel-factorization step at global column index `j`.
+
+    This is the semantic unit the future Pallas panel kernel should preserve:
+    - optional early stop for `pivot_mode="smallest"`
+    - choose and swap the next pivot
+    - form one Householder reflector
+    - append it to the compact panel state
+    - update the active panel block
+    - refresh the in-panel norm metadata
+    """
+    if pivot_mode == "smallest":
+        trailing_norms = norms[j:]
+        if not bool(jnp.any(trailing_norms > 1e-12)):
+            panel_state = PanelState(
+                a=panel_state.a,
+                perm=panel_state.perm,
+                norms=panel_state.norms,
+                y=panel_state.y,
+                tau=panel_state.tau,
+                t=panel_state.t,
+                k=panel_state.k,
+                j=j,
+                panel_end=panel_state.panel_end,
+                active_cols=panel_state.active_cols,
+                done=True,
+            )
+            return a, perm, norms, reflectors, panel_state, True
+
+    pivot_col = choose_pivot(norms, j, pivot_mode)
+    a, perm, norms = swap_columns(a, perm, norms, j, pivot_col)
+    panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
+
+    v, tau, alpha = householder_vector(a[j:, j])
+    reflectors.append((j, v, tau))
+    panel_state = append_reflector_to_panel_state(panel_state, j, v, tau)
+    panel = CompactPanel(
+        panel_start=k,
+        panel_end=k + panel_state.active_cols + 1,
+        y=panel_state.y,
+        tau=panel_state.tau,
+        t=panel_state.t,
+    )
+
+    updated_block = apply_reflector_to_block(v, tau, a[j:, j:panel_end])
+    updated_block = updated_block.at[1:, 0].set(0)
+    updated_block = updated_block.at[0, 0].set(alpha)
+    a = a.at[j:, j:panel_end].set(updated_block)
+    panel_state = PanelState(
+        a=a,
+        perm=perm,
+        norms=norms,
+        y=panel_state.y,
+        tau=panel_state.tau,
+        t=panel_state.t,
+        k=panel_state.k,
+        j=j + 1,
+        panel_end=panel_state.panel_end,
+        active_cols=panel_state.active_cols + 1,
+        done=panel_state.done,
+    )
+
+    norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
+    panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
+    return a, perm, norms, reflectors, panel_state, False
+
+
 def factor_panel(
     a: jnp.ndarray,
     perm: jnp.ndarray,
@@ -773,59 +851,19 @@ def factor_panel(
     )
 
     for j in range(k, panel_end):
-        if pivot_mode == "smallest":
-            trailing_norms = norms[j:]
-            if not bool(jnp.any(trailing_norms > 1e-12)):
-                panel_state = PanelState(
-                    a=panel_state.a,
-                    perm=panel_state.perm,
-                    norms=panel_state.norms,
-                    y=panel_state.y,
-                    tau=panel_state.tau,
-                    t=panel_state.t,
-                    k=panel_state.k,
-                    j=j,
-                    panel_end=panel_state.panel_end,
-                    active_cols=panel_state.active_cols,
-                    done=True,
-                )
-                break
-
-        pivot_col = choose_pivot(norms, j, pivot_mode)
-        a, perm, norms = swap_columns(a, perm, norms, j, pivot_col)
-        panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
-
-        v, tau, alpha = householder_vector(a[j:, j])
-        reflectors.append((j, v, tau))
-        panel_state = append_reflector_to_panel_state(panel_state, j, v, tau)
-        panel = CompactPanel(
-            panel_start=k,
-            panel_end=k + panel_state.active_cols + 1,
-            y=panel_state.y,
-            tau=panel_state.tau,
-            t=panel_state.t,
-        )
-
-        updated_block = apply_reflector_to_block(v, tau, a[j:, j:panel_end])
-        updated_block = updated_block.at[1:, 0].set(0)
-        updated_block = updated_block.at[0, 0].set(alpha)
-        a = a.at[j:, j:panel_end].set(updated_block)
-        panel_state = PanelState(
+        a, perm, norms, reflectors, panel_state, should_stop = panel_step(
             a=a,
             perm=perm,
             norms=norms,
-            y=panel_state.y,
-            tau=panel_state.tau,
-            t=panel_state.t,
-            k=panel_state.k,
-            j=j + 1,
-            panel_end=panel_state.panel_end,
-            active_cols=panel_state.active_cols + 1,
-            done=panel_state.done,
+            reflectors=reflectors,
+            panel_state=panel_state,
+            k=k,
+            j=j,
+            panel_end=panel_end,
+            pivot_mode=pivot_mode,
         )
-
-        norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
-        panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
+        if should_stop:
+            break
 
     final_panel = CompactPanel(
         panel_start=k,
