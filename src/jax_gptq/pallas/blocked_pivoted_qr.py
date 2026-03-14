@@ -901,6 +901,52 @@ def apply_panel_to_trailing(
     return a
 
 
+def factor_panel_pallas(
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    k: int,
+    panel_size: int,
+    pivot_mode: PivotMode,
+):
+    """
+    Kernel-shaped entry point for factoring a single panel.
+
+    Current behavior:
+    - thin wrapper around the reference `factor_panel(...)`
+
+    Intended future behavior:
+    - dispatch to one fused Pallas kernel that executes the full in-panel loop
+      over `j` and emits the compact panel state plus updated metadata.
+    """
+    return factor_panel(
+        a=a,
+        perm=perm,
+        norms=norms,
+        k=k,
+        panel_size=panel_size,
+        pivot_mode=pivot_mode,
+    )
+
+
+def apply_panel_to_trailing_pallas(
+    a: jnp.ndarray,
+    panel: CompactPanel,
+    panel_end: int,
+) -> jnp.ndarray:
+    """
+    Kernel-shaped entry point for the deferred trailing update.
+
+    Current behavior:
+    - thin wrapper around `apply_panel_to_trailing(...)`
+
+    Intended future behavior:
+    - dispatch to a dense Pallas kernel that applies the compact panel
+      transform to the trailing block.
+    """
+    return apply_panel_to_trailing(a=a, panel=panel, panel_end=panel_end)
+
+
 def blocked_pivoted_qr(
     a: jnp.ndarray,
     panel_size: int,

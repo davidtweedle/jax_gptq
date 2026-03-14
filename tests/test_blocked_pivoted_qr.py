@@ -5,12 +5,14 @@ from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_reflectors_to_column,
     apply_reflectors_to_trailing_view,
     apply_reflector_to_block,
+    apply_panel_to_trailing_pallas,
     append_reflector_to_panel_state,
     blocked_pivoted_qr,
     build_compact_panel,
     compute_exposed_trailing_row_from_compact_panel,
     compute_exposed_trailing_row,
     factor_panel,
+    factor_panel_pallas,
     init_panel_state,
 )
 
@@ -324,3 +326,52 @@ def test_compact_panel_exposed_row_matches_exact_helper() -> None:
     expected = compute_exposed_trailing_row(work, reflectors, row_index, start_col)
     actual = compute_exposed_trailing_row_from_compact_panel(panel, trailing_block, row_index)
     assert jnp.allclose(actual, expected, atol=1e-4)
+
+
+def test_factor_panel_pallas_matches_reference_factor_panel() -> None:
+    a = jnp.array(
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+
+    expected = factor_panel(
+        a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
+    )
+    actual = factor_panel_pallas(
+        a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
+    )
+
+    for lhs, rhs in zip(expected[:3], actual[:3]):
+        assert jnp.allclose(lhs, rhs, atol=1e-6)
+    assert expected[3] == actual[3]
+    assert jnp.allclose(expected[4].y, actual[4].y, atol=1e-6)
+    assert jnp.allclose(expected[4].tau, actual[4].tau, atol=1e-6)
+    assert jnp.allclose(expected[4].t, actual[4].t, atol=1e-6)
+
+
+def test_apply_panel_to_trailing_pallas_matches_reference() -> None:
+    a = jnp.array(
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+    work, _, _, _, panel = factor_panel(
+        a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
+    )
+
+    expected = apply_compact_panel_to_block(panel, work[:, 2:])
+    actual = apply_panel_to_trailing_pallas(work, panel, 2)[:, 2:]
+    assert jnp.allclose(actual, expected, atol=1e-6)
