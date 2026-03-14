@@ -518,35 +518,6 @@ def update_panel_state_after_swap(
     )
 
 
-def update_panel_state_after_panel_update(
-    state: PanelState,
-    a: jnp.ndarray,
-    perm: jnp.ndarray,
-    norms: jnp.ndarray,
-    j: int,
-) -> PanelState:
-    """
-    Refresh the panel state after the current Householder reflector has been
-    applied to the active panel block.
-
-    This advances the panel step counter and records that one more pivot has
-    been accepted.
-    """
-    return PanelState(
-        a=a,
-        perm=perm,
-        norms=norms,
-        y=state.y,
-        tau=state.tau,
-        t=state.t,
-        k=state.k,
-        j=j + 1,
-        panel_end=state.panel_end,
-        active_cols=state.active_cols + 1,
-        done=state.done,
-    )
-
-
 def apply_compact_panel_to_block(
     panel: CompactPanel,
     block: jnp.ndarray,
@@ -812,7 +783,19 @@ def factor_panel(
         updated_block = updated_block.at[1:, 0].set(0)
         updated_block = updated_block.at[0, 0].set(alpha)
         a = a.at[j:, j:panel_end].set(updated_block)
-        panel_state = update_panel_state_after_panel_update(panel_state, a, perm, norms, j)
+        panel_state = PanelState(
+            a=a,
+            perm=perm,
+            norms=norms,
+            y=panel_state.y,
+            tau=panel_state.tau,
+            t=panel_state.t,
+            k=panel_state.k,
+            j=j + 1,
+            panel_end=panel_state.panel_end,
+            active_cols=panel_state.active_cols + 1,
+            done=panel_state.done,
+        )
 
         norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
         panel_state = PanelState(
