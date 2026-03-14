@@ -488,6 +488,65 @@ def append_reflector_to_panel_state(
     )
 
 
+def update_panel_state_after_swap(
+    state: PanelState,
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    j: int,
+) -> PanelState:
+    """
+    Refresh the panel state after swapping the selected pivot column into
+    position `j`.
+
+    The swap itself still happens outside this helper. This only makes the
+    state transition explicit so the panel loop can evolve toward a step-based
+    kernel contract.
+    """
+    return PanelState(
+        a=a,
+        perm=perm,
+        norms=norms,
+        y=state.y,
+        tau=state.tau,
+        t=state.t,
+        k=state.k,
+        j=j,
+        panel_end=state.panel_end,
+        active_cols=state.active_cols,
+        done=state.done,
+    )
+
+
+def update_panel_state_after_panel_update(
+    state: PanelState,
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    j: int,
+) -> PanelState:
+    """
+    Refresh the panel state after the current Householder reflector has been
+    applied to the active panel block.
+
+    This advances the panel step counter and records that one more pivot has
+    been accepted.
+    """
+    return PanelState(
+        a=a,
+        perm=perm,
+        norms=norms,
+        y=state.y,
+        tau=state.tau,
+        t=state.t,
+        k=state.k,
+        j=j + 1,
+        panel_end=state.panel_end,
+        active_cols=state.active_cols + 1,
+        done=state.done,
+    )
+
+
 def apply_compact_panel_to_block(
     panel: CompactPanel,
     block: jnp.ndarray,
@@ -736,19 +795,7 @@ def factor_panel(
 
         pivot_col = choose_pivot(norms, j, pivot_mode)
         a, perm, norms = swap_columns(a, perm, norms, j, pivot_col)
-        panel_state = PanelState(
-            a=a,
-            perm=perm,
-            norms=norms,
-            y=panel_state.y,
-            tau=panel_state.tau,
-            t=panel_state.t,
-            k=panel_state.k,
-            j=j,
-            panel_end=panel_state.panel_end,
-            active_cols=panel_state.active_cols,
-            done=panel_state.done,
-        )
+        panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
 
         v, tau, alpha = householder_vector(a[j:, j])
         reflectors.append((j, v, tau))
@@ -765,19 +812,7 @@ def factor_panel(
         updated_block = updated_block.at[1:, 0].set(0)
         updated_block = updated_block.at[0, 0].set(alpha)
         a = a.at[j:, j:panel_end].set(updated_block)
-        panel_state = PanelState(
-            a=a,
-            perm=perm,
-            norms=norms,
-            y=panel_state.y,
-            tau=panel_state.tau,
-            t=panel_state.t,
-            k=panel_state.k,
-            j=j + 1,
-            panel_end=panel_state.panel_end,
-            active_cols=panel_state.active_cols + 1,
-            done=panel_state.done,
-        )
+        panel_state = update_panel_state_after_panel_update(panel_state, a, perm, norms, j)
 
         norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
         panel_state = PanelState(
