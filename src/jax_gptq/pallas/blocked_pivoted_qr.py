@@ -29,9 +29,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+import os
 
 import jax
 import jax.numpy as jnp
+
+try:
+    from jax.experimental import pallas as pl
+except ImportError:  # pragma: no cover - local environments may not have Pallas.
+    pl = None
 
 PivotMode = Literal["largest", "smallest"]
 
@@ -58,6 +64,25 @@ class PanelState:
     panel_end: int
     active_cols: int
     done: bool
+
+
+@dataclass(frozen=True)
+class FactorPanelResult:
+    """
+    Contract for the future fused `factor_panel_pallas(...)` kernel.
+
+    Fields:
+    - `a`: updated work matrix after factoring one panel
+    - `perm`: updated global column permutation
+    - `norms`: updated trailing norm metadata
+    - `reflectors`: reference-only reflector list retained for parity tests
+    - `panel`: compact panel representation for deferred trailing updates
+    """
+    a: jnp.ndarray
+    perm: jnp.ndarray
+    norms: jnp.ndarray
+    reflectors: list[tuple[int, jnp.ndarray, jnp.ndarray]]
+    panel: CompactPanel
 
 
 def init_panel_state(
@@ -578,6 +603,94 @@ def apply_compact_panel_to_block(
     return block - panel.y @ w
 
 
+def apply_compact_panel_to_block_pallas(
+    panel: CompactPanel,
+    block: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Future GPU/TPU kernel entry point for compact panel application.
+
+    Current behavior:
+    - validates the trailing block interface that the eventual kernel will own
+    - falls back to the dense JAX reference helper
+
+    Intended future behavior:
+    - dispatch to a dense Pallas kernel operating on `block`
+    - keep the algebraic contract identical to `apply_compact_panel_to_block`
+    - return the updated trailing block only, not the full matrix
+
+    Notes for the future GPU Pallas version:
+    - the update to implement is:
+        block <- block - Y (T^T (Y^T block))
+    - the natural first Pallas kernel boundary is the whole `block`, not the
+      full matrix `a`
+    - until that backend path is validated, preserve exact reference semantics
+    """
+    block = jnp.asarray(block)
+    if block.ndim != 2:
+        raise ValueError(f"block must be 2D, got {block.shape}")
+    if block.shape[0] != panel.y.shape[0]:
+        raise ValueError(
+            f"block row dimension must match panel rows, got {block.shape[0]} and {panel.y.shape[0]}"
+        )
+
+    # Keep the Pallas path opt-in until it has been validated on accelerator
+    # hardware. This preserves local development and CI on machines without a
+    # usable backend.
+    use_pallas = os.environ.get("JAX_GPTQ_USE_PALLAS", "0") == "1"
+    if not use_pallas or pl is None or block.shape[1] == 0:
+        return apply_compact_panel_to_block(panel, block)
+
+    m, n = block.shape
+    b = panel.y.shape[1]
+    if b == 0:
+        return block
+
+    # GPU-first prototype:
+    # - tile across trailing columns only
+    # - keep the full panel state (Y, T) available to each tile
+    # - pad the trailing width so every program instance sees a fixed-size tile
+    block_cols = min(128, max(1, n))
+    pad_cols = (-n) % block_cols
+    block_padded = jnp.pad(block, ((0, 0), (0, pad_cols)))
+    n_padded = block_padded.shape[1]
+    grid_n = n_padded // block_cols
+
+    def kernel(block_ref, y_ref, t_ref, out_ref):
+        block_tile = block_ref[:, :]
+        y = y_ref[:, :]
+        t = t_ref[:, :]
+        w = y.T @ block_tile
+        w = t.T @ w
+        out_ref[:, :] = block_tile - y @ w
+
+    out_shape = jax.ShapeDtypeStruct((m, n_padded), block.dtype)
+    block_spec = pl.BlockSpec(
+        index_map=lambda j: (0, j * block_cols),
+        block_shape=(m, block_cols),
+    )
+    full_y_spec = pl.BlockSpec(
+        index_map=lambda j: (0, 0),
+        block_shape=(m, b),
+    )
+    full_t_spec = pl.BlockSpec(
+        index_map=lambda j: (0, 0),
+        block_shape=(b, b),
+    )
+
+    updated_padded = pl.pallas_call(
+        kernel,
+        out_shape=out_shape,
+        grid=(grid_n,),
+        in_specs=[block_spec, full_y_spec, full_t_spec],
+        out_specs=block_spec,
+    )(block_padded, panel.y, panel.t)
+
+    if pad_cols:
+        return updated_padded[:, :n]
+    return updated_padded
+
+
 def compute_exposed_trailing_row_from_compact_panel(
     panel: CompactPanel,
     trailing_block: jnp.ndarray,
@@ -918,14 +1031,34 @@ def factor_panel_pallas(
     Intended future behavior:
     - dispatch to one fused Pallas kernel that executes the full in-panel loop
       over `j` and emits the compact panel state plus updated metadata.
+
+    Kernel contract:
+    Inputs:
+    - `a`: full work matrix
+    - `perm`: full column permutation
+    - `norms`: full per-column trailing norm metadata
+    - `k`: panel start index
+    - `panel_size`: nominal panel width
+    - `pivot_mode`: pivot selection rule
+
+    Outputs:
+    - `FactorPanelResult` containing the updated work state and the compact
+      panel object needed by the deferred trailing-update kernel
     """
-    return factor_panel(
+    a_out, perm_out, norms_out, reflectors, panel = factor_panel(
         a=a,
         perm=perm,
         norms=norms,
         k=k,
         panel_size=panel_size,
         pivot_mode=pivot_mode,
+    )
+    return FactorPanelResult(
+        a=a_out,
+        perm=perm_out,
+        norms=norms_out,
+        reflectors=reflectors,
+        panel=panel,
     )
 
 
@@ -943,8 +1076,22 @@ def apply_panel_to_trailing_pallas(
     Intended future behavior:
     - dispatch to a dense Pallas kernel that applies the compact panel
       transform to the trailing block.
+
+    Kernel contract:
+    Inputs:
+    - `a`: full work matrix containing the stale trailing block
+    - `panel`: compact panel transform emitted by `factor_panel_pallas(...)`
+    - `panel_end`: first trailing column index
+
+    Output:
+    - updated work matrix with the compact panel applied to `a[:, panel_end:]`
     """
-    return apply_panel_to_trailing(a=a, panel=panel, panel_end=panel_end)
+    a = jnp.asarray(a)
+    if panel_end >= a.shape[1]:
+        return a
+
+    updated = apply_compact_panel_to_block_pallas(panel, a[:, panel_end:])
+    return a.at[:, panel_end:].set(updated)
 
 
 def blocked_pivoted_qr(

@@ -348,16 +348,16 @@ def test_factor_panel_pallas_matches_reference_factor_panel() -> None:
         a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
     )
 
-    for lhs, rhs in zip(expected[:3], actual[:3]):
+    for lhs, rhs in zip(expected[:3], (actual.a, actual.perm, actual.norms)):
         assert jnp.allclose(lhs, rhs, atol=1e-6)
-    assert len(expected[3]) == len(actual[3])
-    for (j_lhs, v_lhs, tau_lhs), (j_rhs, v_rhs, tau_rhs) in zip(expected[3], actual[3]):
+    assert len(expected[3]) == len(actual.reflectors)
+    for (j_lhs, v_lhs, tau_lhs), (j_rhs, v_rhs, tau_rhs) in zip(expected[3], actual.reflectors):
         assert j_lhs == j_rhs
         assert jnp.allclose(v_lhs, v_rhs, atol=1e-6)
         assert jnp.allclose(tau_lhs, tau_rhs, atol=1e-6)
-    assert jnp.allclose(expected[4].y, actual[4].y, atol=1e-6)
-    assert jnp.allclose(expected[4].tau, actual[4].tau, atol=1e-6)
-    assert jnp.allclose(expected[4].t, actual[4].t, atol=1e-6)
+    assert jnp.allclose(expected[4].y, actual.panel.y, atol=1e-6)
+    assert jnp.allclose(expected[4].tau, actual.panel.tau, atol=1e-6)
+    assert jnp.allclose(expected[4].t, actual.panel.t, atol=1e-6)
 
 
 def test_apply_panel_to_trailing_pallas_matches_reference() -> None:
