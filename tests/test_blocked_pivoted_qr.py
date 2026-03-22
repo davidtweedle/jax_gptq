@@ -6,6 +6,7 @@ from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_reflectors_to_column,
     apply_reflectors_to_trailing_view,
     apply_reflector_to_block,
+    apply_reflector_to_block_pallas,
     apply_panel_to_trailing_pallas,
     append_reflector_to_panel_state,
     blocked_pivoted_qr,
@@ -296,6 +297,24 @@ def test_apply_compact_panel_matches_reflector_replay_on_block() -> None:
 
     actual = apply_compact_panel_to_block(panel, block)
     assert jnp.allclose(actual, expected, atol=1e-4)
+
+
+def test_apply_reflector_to_block_pallas_matches_reference() -> None:
+    block = jnp.array(
+        [
+            [3.0, 1.0, 0.0],
+            [4.0, 0.0, 2.0],
+            [0.0, 5.0, 1.0],
+            [0.0, 0.0, 6.0],
+        ],
+        dtype=jnp.float32,
+    )
+    v = jnp.array([1.0, 0.25, -0.5, 0.75], dtype=jnp.float32)
+    tau = jnp.array(0.8, dtype=jnp.float32)
+
+    expected = apply_reflector_to_block(v, tau, block)
+    actual = apply_reflector_to_block_pallas(v, tau, block)
+    assert jnp.allclose(actual, expected, atol=1e-6)
 
 
 def test_compact_panel_exposed_row_matches_exact_helper() -> None:

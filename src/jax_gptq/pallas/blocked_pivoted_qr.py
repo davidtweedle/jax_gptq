@@ -280,6 +280,83 @@ def apply_reflector_to_block(
     return block - jnp.outer(v, w)
 
 
+def apply_reflector_to_block_pallas(
+    v: jnp.ndarray,
+    tau: jnp.ndarray,
+    block: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Pallas-capable entry point for one Householder block update.
+
+    Current behavior:
+    - validates the kernel-shaped interface for the in-panel update
+    - falls back to the dense JAX reference helper unless the Pallas path is
+      explicitly enabled
+
+    Intended future behavior:
+    - provide the primitive used inside a fused `panel_step` / panel-factor
+      kernel for updating the active in-panel block.
+    """
+    v = jnp.asarray(v)
+    tau = jnp.asarray(tau)
+    block = jnp.asarray(block)
+    if v.ndim != 1:
+        raise ValueError(f"v must be 1D, got {v.shape}")
+    if tau.ndim != 0:
+        raise ValueError(f"tau must be scalar, got {tau.shape}")
+    if block.ndim != 2:
+        raise ValueError(f"block must be 2D, got {block.shape}")
+    if block.shape[0] != v.shape[0]:
+        raise ValueError(
+            f"block row dimension must match v length, got {block.shape[0]} and {v.shape[0]}"
+        )
+
+    use_pallas = os.environ.get("JAX_GPTQ_USE_PALLAS", "0") == "1"
+    if not use_pallas or pl is None or block.shape[1] == 0:
+        return apply_reflector_to_block(v, tau, block)
+
+    m, n = block.shape
+    block_cols = min(128, max(1, n))
+    pad_cols = (-n) % block_cols
+    block_padded = jnp.pad(block, ((0, 0), (0, pad_cols)))
+    n_padded = block_padded.shape[1]
+    grid_n = n_padded // block_cols
+    tau_buf = tau.reshape(1)
+
+    def kernel(block_ref, v_ref, tau_ref, out_ref):
+        block_tile = block_ref[:, :]
+        v_local = v_ref[:]
+        tau_local = tau_ref[0]
+        w = tau_local * (v_local @ block_tile)
+        out_ref[:, :] = block_tile - v_local[:, None] * w[None, :]
+
+    out_shape = jax.ShapeDtypeStruct((m, n_padded), block.dtype)
+    block_spec = pl.BlockSpec(
+        index_map=lambda j: (0, j * block_cols),
+        block_shape=(m, block_cols),
+    )
+    full_v_spec = pl.BlockSpec(
+        index_map=lambda j: (0,),
+        block_shape=(m,),
+    )
+    tau_spec = pl.BlockSpec(
+        index_map=lambda j: (0,),
+        block_shape=(1,),
+    )
+
+    updated_padded = pl.pallas_call(
+        kernel,
+        out_shape=out_shape,
+        grid=(grid_n,),
+        in_specs=[block_spec, full_v_spec, tau_spec],
+        out_specs=block_spec,
+    )(block_padded, v, tau_buf)
+
+    if pad_cols:
+        return updated_padded[:, :n]
+    return updated_padded
+
+
 def update_norms_exact(a: jnp.ndarray, j: int) -> jnp.ndarray:
     """
     Recompute exact trailing norms for columns j+1:n.
@@ -878,7 +955,7 @@ def panel_step(
         t=panel_state.t,
     )
 
-    updated_block = apply_reflector_to_block(v, tau, a[j:, j:panel_end])
+    updated_block = apply_reflector_to_block_pallas(v, tau, a[j:, j:panel_end])
     updated_block = updated_block.at[1:, 0].set(0)
     updated_block = updated_block.at[0, 0].set(alpha)
     a = a.at[j:, j:panel_end].set(updated_block)

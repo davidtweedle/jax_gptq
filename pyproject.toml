@@ -9,12 +9,24 @@ description = "JAX/TPU implementation of GPTQ and Qronos-style quantization."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "jax>=0.4.30",
-  "jaxlib>=0.4.30",
   "numpy>=1.26",
   "transformers>=4.50.0",
   "datasets>=2.20.0",
   "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+cpu = [
+  "jax>=0.4.30",
+]
+cuda12 = [
+  "jax[cuda12]>=0.4.30",
+]
+cuda13 = [
+  "jax[cuda13]>=0.4.30",
+]
+test = [
+  "pytest>=8.0",
 ]
 
 [tool.setuptools]
