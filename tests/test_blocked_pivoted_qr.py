@@ -2,6 +2,7 @@ import jax.numpy as jnp
 
 from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_compact_panel_to_block,
+    apply_panel_to_trailing,
     apply_reflectors_to_column,
     apply_reflectors_to_trailing_view,
     apply_reflector_to_block,
@@ -378,4 +379,73 @@ def test_apply_panel_to_trailing_pallas_matches_reference() -> None:
 
     expected = apply_compact_panel_to_block(panel, work[:, 2:])
     actual = apply_panel_to_trailing_pallas(work, panel, 2)[:, 2:]
+    assert jnp.allclose(actual, expected, atol=1e-6)
+
+
+def test_blocked_pivoted_qr_matches_driver_built_from_pallas_entry_points() -> None:
+    a = jnp.array(
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+
+    expected_work = a
+    expected_perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    expected_norms = jnp.linalg.norm(a, axis=0)
+    limit = min(a.shape[0], a.shape[1])
+    panel_size = 2
+
+    for k in range(0, limit, panel_size):
+        result = factor_panel_pallas(
+            a=expected_work,
+            perm=expected_perm,
+            norms=expected_norms,
+            k=k,
+            panel_size=panel_size,
+            pivot_mode="largest",
+        )
+        expected_work = apply_panel_to_trailing_pallas(
+            result.a,
+            result.panel,
+            result.panel.panel_end,
+        )
+        expected_perm = result.perm
+        expected_norms = jnp.linalg.norm(expected_work[result.panel.panel_end :, :], axis=0)
+
+    actual_work, actual_perm = blocked_pivoted_qr(a, panel_size=panel_size, pivot_mode="largest")
+
+    assert jnp.allclose(actual_work, expected_work, atol=1e-6)
+    assert jnp.array_equal(actual_perm, expected_perm)
+
+
+def test_apply_panel_to_trailing_uses_realized_panel_end_for_early_stop() -> None:
+    a = jnp.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=jnp.float32,
+    )
+    perm = jnp.arange(a.shape[1], dtype=jnp.int32)
+    norms = jnp.linalg.norm(a, axis=0)
+
+    result = factor_panel_pallas(
+        a=a,
+        perm=perm,
+        norms=norms,
+        k=0,
+        panel_size=2,
+        pivot_mode="smallest",
+    )
+
+    assert result.panel.panel_end == 0
+
+    actual = apply_panel_to_trailing_pallas(result.a, result.panel, result.panel.panel_end)
+    expected = apply_panel_to_trailing(result.a, result.panel, result.panel.panel_end)
+
     assert jnp.allclose(actual, expected, atol=1e-6)

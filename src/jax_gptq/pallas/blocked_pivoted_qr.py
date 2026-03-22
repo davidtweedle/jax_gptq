@@ -1125,7 +1125,7 @@ def blocked_pivoted_qr(
     work = a
     limit = min(a.shape[0], a.shape[1])
     for k in range(0, limit, panel_size):
-        work, perm, norms, reflectors, panel = factor_panel(
+        result = factor_panel_pallas(
             a=work,
             perm=perm,
             norms=norms,
@@ -1133,8 +1133,13 @@ def blocked_pivoted_qr(
             panel_size=panel_size,
             pivot_mode=pivot_mode,
         )
-        panel_end = min(k + panel_size, limit)
-        work = apply_panel_to_trailing(work, panel, panel_end)
+        work = result.a
+        perm = result.perm
+        norms = result.norms
+        panel = result.panel
+
+        panel_end = panel.panel_end
+        work = apply_panel_to_trailing_pallas(work, panel, panel_end)
         norms = refresh_trailing_norm_metadata(work, panel_end)
 
     return work, perm
