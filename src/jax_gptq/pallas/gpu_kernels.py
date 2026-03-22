@@ -11,6 +11,11 @@ try:
 except ImportError:  # pragma: no cover - local environments may not have Pallas.
     pl = None
 
+try:
+    from jax.experimental.pallas import triton as pltriton
+except ImportError:  # pragma: no cover - local environments may not have Triton backend.
+    pltriton = None
+
 if TYPE_CHECKING:
     from .blocked_pivoted_qr import CompactPanel
 
@@ -80,6 +85,7 @@ def apply_reflector_to_block_pallas_gpu(
         grid=(grid_n,),
         in_specs=[block_spec, full_v_spec, tau_spec],
         out_specs=block_spec,
+        compiler_params=pltriton.CompilerParams() if pltriton is not None else None,
     )(block_padded, v, tau_buf)
 
     if pad_cols:
@@ -150,6 +156,7 @@ def apply_compact_panel_to_block_pallas_gpu(
         grid=(grid_n,),
         in_specs=[block_spec, full_y_spec, full_t_spec],
         out_specs=block_spec,
+        compiler_params=pltriton.CompilerParams() if pltriton is not None else None,
     )(block_padded, panel.y, panel.t)
 
     if pad_cols:

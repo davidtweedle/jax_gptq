@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+import jax
 import jax.numpy as jnp
 
 from .gpu_kernels import (
