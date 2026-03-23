@@ -62,6 +62,11 @@ def apply_reflector_to_block_pallas_gpu(
     n_padded = block_padded.shape[1]
     grid_n = n_padded // block_cols
 
+    tile_elems = m * block_cols
+    if tile_elems & (tile_elems - 1):
+        w = tau * (v @ block)
+        return block - jnp.outer(v, w)
+
     tau_buf = tau.reshape(1)
 
     def kernel(block_ref, v_ref, tau_ref, out_ref):
