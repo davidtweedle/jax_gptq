@@ -87,6 +87,7 @@ def apply_reflector_to_block_pallas_gpu(
             block_shape=(1,),
             )
 
+    print("reflector kernel shapes:", {"v": v.shape, "block": block.shape, "block_cols": block_cols, "pad_cols": pad_cols})
 
     updated_padded = pl.pallas_call(
         kernel,
