@@ -33,9 +33,14 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 
+from .backend import selected_kernel_backend
 from .gpu_kernels import (
     apply_compact_panel_to_block_pallas_gpu,
     apply_reflector_to_block_pallas_gpu,
+)
+from .tpu_kernels import (
+    apply_compact_panel_to_block_pallas_tpu,
+    apply_reflector_to_block_pallas_tpu,
 )
 
 PivotMode = Literal["largest", "smallest"]
@@ -288,13 +293,19 @@ def apply_reflector_to_block_pallas(
     Backend-dispatching entry point for one Householder block update.
 
     Current behavior:
-    - dispatches to the GPU implementation
-    - preserves the existing reference fallback behavior inside that backend
-
-    Later blocked version:
-    - dispatch on the active accelerator backend once TPU kernels exist.
+    - dispatches based on the selected kernel backend
+    - `reference` uses the dense JAX helper
+    - `gpu` uses the GPU kernel module
+    - `tpu` raises until the TPU kernel is implemented
     """
-    return apply_reflector_to_block_pallas_gpu(v, tau, block)
+    backend = selected_kernel_backend()
+    if backend == "reference":
+        return apply_reflector_to_block(v, tau, block)
+    if backend == "gpu":
+        return apply_reflector_to_block_pallas_gpu(v, tau, block)
+    if backend == "tpu":
+        return apply_reflector_to_block_pallas_tpu(v, tau, block)
+    raise ValueError(f"unsupported kernel backend {backend!r}")
 
 
 def update_norms_exact(a: jnp.ndarray, j: int) -> jnp.ndarray:
@@ -628,13 +639,19 @@ def apply_compact_panel_to_block_pallas(
     Backend-dispatching entry point for compact panel application.
 
     Current behavior:
-    - dispatches to the GPU implementation
-    - preserves the existing reference fallback behavior inside that backend
-
-    Later blocked version:
-    - dispatch on the active accelerator backend once TPU kernels exist.
+    - dispatches based on the selected kernel backend
+    - `reference` uses the dense JAX helper
+    - `gpu` uses the GPU kernel module
+    - `tpu` raises until the TPU kernel is implemented
     """
-    return apply_compact_panel_to_block_pallas_gpu(panel, block)
+    backend = selected_kernel_backend()
+    if backend == "reference":
+        return apply_compact_panel_to_block(panel, block)
+    if backend == "gpu":
+        return apply_compact_panel_to_block_pallas_gpu(panel, block)
+    if backend == "tpu":
+        return apply_compact_panel_to_block_pallas_tpu(panel, block)
+    raise ValueError(f"unsupported kernel backend {backend!r}")
 
 
 def compute_exposed_trailing_row_from_compact_panel(

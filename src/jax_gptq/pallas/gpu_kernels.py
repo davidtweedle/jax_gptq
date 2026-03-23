@@ -56,14 +56,15 @@ def apply_reflector_to_block_pallas_gpu(
     block_padded = jnp.pad(block, ((0, 0), (0, pad_cols)))
     n_padded = block_padded.shape[1]
     grid_n = n_padded // block_cols
-    tau_buf = tau.reshape(1)
 
-    def kernel(block_ref, v_ref, tau_ref, out_ref):
-        block_tile = block_ref[:, :]
-        v_local = v_ref[:]
-        tau_local = tau_ref[0]
-        w = tau_local * (v_local @ block_tile)
-        out_ref[:, :] = block_tile - v_local[:, None] * w[None, :]
+    row_idx = jnp.arange(m)
+
+    def kernel(block_ref, v_ref, out_ref):
+        block_tile = pl.load(block_ref, (row_idx[:, None], slice(None)))
+        v_local = pl.load(v_ref, (row_idx,))
+        w = tau * jnp.sum(v_local[:, None] * block_tile, axis=0)
+        updated = block_tile - v_local[:, None] * w[None, :]
+        pl.store(out_ref, (row_idx[:, None], slice(None)), updated)
 
     out_shape = jax.ShapeDtypeStruct((m, n_padded), block.dtype)
     block_spec = pl.BlockSpec(
@@ -74,19 +75,15 @@ def apply_reflector_to_block_pallas_gpu(
         index_map=lambda j: (0,),
         block_shape=(m,),
     )
-    tau_spec = pl.BlockSpec(
-        index_map=lambda j: (0,),
-        block_shape=(1,),
-    )
 
     updated_padded = pl.pallas_call(
         kernel,
         out_shape=out_shape,
         grid=(grid_n,),
-        in_specs=[block_spec, full_v_spec, tau_spec],
+        in_specs=[block_spec, full_v_spec],
         out_specs=block_spec,
         compiler_params=pltriton.CompilerParams() if pltriton is not None else None,
-    )(block_padded, v, tau_buf)
+    )(block_padded, v)
 
     if pad_cols:
         return updated_padded[:, :n]
@@ -117,48 +114,8 @@ def apply_compact_panel_to_block_pallas_gpu(
         w = panel.t.T @ w
         return block - panel.y @ w
 
-    m, n = block.shape
-    b = panel.y.shape[1]
-    if b == 0:
-        return block
-
-    block_cols = min(128, max(1, n))
-    pad_cols = (-n) % block_cols
-    block_padded = jnp.pad(block, ((0, 0), (0, pad_cols)))
-    n_padded = block_padded.shape[1]
-    grid_n = n_padded // block_cols
-
-    def kernel(block_ref, y_ref, t_ref, out_ref):
-        block_tile = block_ref[:, :]
-        y = y_ref[:, :]
-        t = t_ref[:, :]
-        w = y.T @ block_tile
-        w = t.T @ w
-        out_ref[:, :] = block_tile - y @ w
-
-    out_shape = jax.ShapeDtypeStruct((m, n_padded), block.dtype)
-    block_spec = pl.BlockSpec(
-        index_map=lambda j: (0, j * block_cols),
-        block_shape=(m, block_cols),
-    )
-    full_y_spec = pl.BlockSpec(
-        index_map=lambda j: (0, 0),
-        block_shape=(m, b),
-    )
-    full_t_spec = pl.BlockSpec(
-        index_map=lambda j: (0, 0),
-        block_shape=(b, b),
-    )
-
-    updated_padded = pl.pallas_call(
-        kernel,
-        out_shape=out_shape,
-        grid=(grid_n,),
-        in_specs=[block_spec, full_y_spec, full_t_spec],
-        out_specs=block_spec,
-        compiler_params=pltriton.CompilerParams() if pltriton is not None else None,
-    )(block_padded, panel.y, panel.t)
-
-    if pad_cols:
-        return updated_padded[:, :n]
-    return updated_padded
+    # Keep the compact WY update on the dense JAX reference path until the
+    # simpler Householder primitive is validated on Triton-backed Pallas.
+    w = panel.y.T @ block
+    w = panel.t.T @ w
+    return block - panel.y @ w
