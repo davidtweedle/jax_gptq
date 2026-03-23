@@ -57,12 +57,14 @@ def apply_reflector_to_block_pallas_gpu(
     n_padded = block_padded.shape[1]
     grid_n = n_padded // block_cols
 
-    row_idx = jnp.arange(m)
+    tau_buf = tau.reshape(1)
 
-    def kernel(block_ref, v_ref, out_ref):
+    def kernel(block_ref, v_ref, tau_ref, out_ref):
+        row_idx = jnp.arange(block_ref.shape[0])
         block_tile = block_ref[row_idx, :]
         v_local = v_ref[row_idx]
-        w = tau * jnp.sum(v_local[:, None] * block_tile, axis=0)
+        tau_local = tau_ref[0]
+        w = tau_local * jnp.sum(v_local[:, None] * block_tile, axis=0)
         updated = block_tile - v_local[:, None] * w[None, :]
         out_ref[row_idx, :] = updated
 
@@ -75,15 +77,20 @@ def apply_reflector_to_block_pallas_gpu(
         index_map=lambda j: (0,),
         block_shape=(m,),
     )
+    tau_spec = pl.BlockSpec(
+            index_map=lambda j: (0,),
+            block_shape=(1,),
+            )
+
 
     updated_padded = pl.pallas_call(
         kernel,
         out_shape=out_shape,
         grid=(grid_n,),
-        in_specs=[block_spec, full_v_spec],
+        in_specs=[block_spec, full_v_spec, tau_spec],
         out_specs=block_spec,
         compiler_params=pltriton.CompilerParams() if pltriton is not None else None,
-    )(block_padded, v)
+    )(block_padded, v, tau_buf)
 
     if pad_cols:
         return updated_padded[:, :n]
