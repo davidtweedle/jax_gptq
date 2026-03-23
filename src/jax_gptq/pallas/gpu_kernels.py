@@ -60,11 +60,11 @@ def apply_reflector_to_block_pallas_gpu(
     row_idx = jnp.arange(m)
 
     def kernel(block_ref, v_ref, out_ref):
-        block_tile = pltriton.load(block_ref, (row_idx[:, None], slice(None)))
-        v_local = pltriton.load(v_ref, (row_idx,))
+        block_tile = block_ref[row_idx[:, None], :]
+        v_local = v_ref[row_idx]
         w = tau * jnp.sum(v_local[:, None] * block_tile, axis=0)
         updated = block_tile - v_local[:, None] * w[None, :]
-        pltriton.store(out_ref, (row_idx[:, None], slice(None)), updated)
+        out_ref[row_idx[:, None], :] = updated
 
     out_shape = jax.ShapeDtypeStruct((m, n_padded), block.dtype)
     block_spec = pl.BlockSpec(
