@@ -51,8 +51,13 @@ def apply_reflector_to_block_pallas_gpu(
         return block - jnp.outer(v, w)
 
     m, n = block.shape
-    block_cols = min(128, max(1, n))
-    pad_cols = (-n) % block_cols
+    block_cols = 1
+    while block_cols < n:
+        block_cols *= 2
+    block_cols = min(block_cols, 128)
+    if block_cols < n:
+        block_cols = 128
+    pad_cols = block_cols - n if n < block_cols else (-n) % block_cols
     block_padded = jnp.pad(block, ((0, 0), (0, pad_cols)))
     n_padded = block_padded.shape[1]
     grid_n = n_padded // block_cols
