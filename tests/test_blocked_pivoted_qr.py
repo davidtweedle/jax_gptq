@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+import os
+
 from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_compact_panel_to_block,
     apply_panel_to_trailing,
@@ -311,6 +313,44 @@ def test_apply_reflector_to_block_pallas_matches_reference() -> None:
     )
     v = jnp.array([1.0, 0.25, -0.5, 0.75], dtype=jnp.float32)
     tau = jnp.array(0.8, dtype=jnp.float32)
+
+    expected = apply_reflector_to_block(v, tau, block)
+    actual = apply_reflector_to_block_pallas(v, tau, block)
+    assert jnp.allclose(actual, expected, atol=1e-6)
+
+
+def test_apply_reflector_to_block_pallas_matches_reference_4x4() -> None:
+    if os.environ.get("JAX_GPTQ_USE_PALLAS") != "1":
+        return
+    if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") != "gpu":
+        return
+    block = jnp.array(
+            [
+                [3.0, 1.0, 0.0, 2.0],
+                [4.0, 0.0, 2.0, 1.0],
+                [0.0, 5.0, 1.0, 0.0],
+                [0.0, 0.0, 6.0, 1.0]
+                ],
+            dtype=jnp.float32,
+            )
+    v = jnp.array([1.0, 0.25, -0.5, 0.75], dtype=jnp.float32)
+    tau = jnp.array(0.8, dtype=jnp.float32)
+
+    expected = apply_reflector_to_block(v, tau, block)
+    actual = apply_reflector_to_block_pallas(v, tau, block)
+    assert jnp.allclose(actual, expected, atol=1e-6)
+
+
+def test_apply_reflector_to_block_pallas_matches_reference_8x8() -> None:
+    if os.environ.get("JAX_GPTQ_USE_PALLAS") != "1":
+        return
+    if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") != "gpu":
+        return
+
+    block = jnp.arange(64.0, dtype=jnp.float32).reshape(8, 8)
+    v = jnp.array([1.0, -0.5, 0.25, 0.75, -0.125, 0.5, -0.25, 0.375],
+                  dtype=jnp.float32)
+    tau = jnp.array(0.6, dtype=jnp.float32)
 
     expected = apply_reflector_to_block(v, tau, block)
     actual = apply_reflector_to_block_pallas(v, tau, block)
