@@ -74,8 +74,7 @@ def apply_reflector_to_block_pallas_tpu(
         block_tile = block_ref[:, :]
         v_local = v_ref[:]
         tau_local = jnp.squeeze(tau_ref[:], axis=0)
-        w = tau_local * jnp.einsum(
-            "m,mn->n",
+        w = tau_local * jnp.dot(
             v_local,
             block_tile,
             precision=lax.Precision.HIGHEST,
