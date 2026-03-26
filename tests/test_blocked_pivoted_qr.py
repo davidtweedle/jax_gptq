@@ -2,8 +2,13 @@ import jax.numpy as jnp
 
 import os
 
+from jax_gptq.pallas.gpu_kernels import (
+    compact_panel_kernel_supported_shape,
+    reflector_kernel_supported_shape,
+)
 from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_compact_panel_to_block,
+    apply_compact_panel_to_block_pallas,
     apply_panel_to_trailing,
     apply_reflectors_to_column,
     apply_reflectors_to_trailing_view,
@@ -301,6 +306,62 @@ def test_apply_compact_panel_matches_reflector_replay_on_block() -> None:
     assert jnp.allclose(actual, expected, atol=1e-4)
 
 
+def test_apply_compact_panel_to_block_pallas_matches_reference_supported_shape() -> None:
+    panel = build_compact_panel(
+        reflectors=[
+            (
+                0,
+                jnp.array([1.0, 0.25, -0.5, 0.75], dtype=jnp.float32),
+                jnp.array(0.8, dtype=jnp.float32),
+            ),
+            (
+                1,
+                jnp.array([1.0, -0.25, 0.5], dtype=jnp.float32),
+                jnp.array(0.6, dtype=jnp.float32),
+            ),
+        ],
+        panel_start=0,
+        panel_end=2,
+        n_rows=4,
+    )
+    block = jnp.arange(16.0, dtype=jnp.float32).reshape(4, 4)
+
+    assert compact_panel_kernel_supported_shape(panel.y.shape, block.shape)
+
+    expected = apply_compact_panel_to_block(panel, block)
+    actual = apply_compact_panel_to_block_pallas(panel, block)
+    assert jnp.allclose(actual, expected, atol=1e-6)
+
+
+def test_apply_compact_panel_to_block_pallas_falls_back_on_unsupported_shape() -> None:
+    panel = build_compact_panel(
+        reflectors=[
+            (
+                0,
+                jnp.array([1.0, 0.25, -0.5], dtype=jnp.float32),
+                jnp.array(0.8, dtype=jnp.float32),
+            ),
+        ],
+        panel_start=0,
+        panel_end=1,
+        n_rows=3,
+    )
+    block = jnp.array(
+        [
+            [1.0],
+            [2.0],
+            [3.0],
+        ],
+        dtype=jnp.float32,
+    )
+
+    assert not compact_panel_kernel_supported_shape(panel.y.shape, block.shape)
+
+    expected = apply_compact_panel_to_block(panel, block)
+    actual = apply_compact_panel_to_block_pallas(panel, block)
+    assert jnp.allclose(actual, expected, atol=1e-6)
+
+
 def test_apply_reflector_to_block_pallas_matches_reference() -> None:
     block = jnp.array(
         [
@@ -324,15 +385,16 @@ def test_apply_reflector_to_block_pallas_matches_reference_4x4() -> None:
         return
     if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") != "gpu":
         return
+    assert reflector_kernel_supported_shape((4, 4))
     block = jnp.array(
-            [
-                [3.0, 1.0, 0.0, 2.0],
-                [4.0, 0.0, 2.0, 1.0],
-                [0.0, 5.0, 1.0, 0.0],
-                [0.0, 0.0, 6.0, 1.0]
-                ],
-            dtype=jnp.float32,
-            )
+        [
+            [3.0, 1.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0, 1.0],
+            [0.0, 5.0, 1.0, 0.0],
+            [0.0, 0.0, 6.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
     v = jnp.array([1.0, 0.25, -0.5, 0.75], dtype=jnp.float32)
     tau = jnp.array(0.8, dtype=jnp.float32)
 
@@ -346,11 +408,33 @@ def test_apply_reflector_to_block_pallas_matches_reference_8x8() -> None:
         return
     if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") != "gpu":
         return
+    assert reflector_kernel_supported_shape((8, 8))
 
     block = jnp.arange(64.0, dtype=jnp.float32).reshape(8, 8)
-    v = jnp.array([1.0, -0.5, 0.25, 0.75, -0.125, 0.5, -0.25, 0.375],
-                  dtype=jnp.float32)
+    v = jnp.array(
+        [1.0, -0.5, 0.25, 0.75, -0.125, 0.5, -0.25, 0.375],
+        dtype=jnp.float32,
+    )
     tau = jnp.array(0.6, dtype=jnp.float32)
+
+    expected = apply_reflector_to_block(v, tau, block)
+    actual = apply_reflector_to_block_pallas(v, tau, block)
+    assert jnp.allclose(actual, expected, atol=1e-6)
+
+
+def test_apply_reflector_to_block_pallas_falls_back_on_unsupported_shape() -> None:
+    assert not reflector_kernel_supported_shape((3, 1))
+
+    block = jnp.array(
+        [
+            [3.0],
+            [4.0],
+            [0.0],
+        ],
+        dtype=jnp.float32,
+    )
+    v = jnp.array([1.0, 0.25, -0.5], dtype=jnp.float32)
+    tau = jnp.array(0.8, dtype=jnp.float32)
 
     expected = apply_reflector_to_block(v, tau, block)
     actual = apply_reflector_to_block_pallas(v, tau, block)

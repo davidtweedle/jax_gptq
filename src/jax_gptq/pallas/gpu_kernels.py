@@ -20,6 +20,65 @@ if TYPE_CHECKING:
     from .blocked_pivoted_qr import CompactPanel
 
 
+def _dense_reflector_update(v: jnp.ndarray, tau: jnp.ndarray, block: jnp.ndarray) -> jnp.ndarray:
+    w = tau * (v @ block)
+    return block - jnp.outer(v, w)
+
+
+def _is_power_of_two(n: int) -> bool:
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def _dense_compact_panel_update(panel: CompactPanel, block: jnp.ndarray) -> jnp.ndarray:
+    w = panel.y.T @ block
+    w = panel.t.T @ w
+    return block - panel.y @ w
+
+
+def reflector_kernel_tile_cols(n_cols: int, max_block_cols: int = 128) -> int:
+    block_cols = 1
+    while block_cols < n_cols:
+        block_cols *= 2
+    block_cols = min(block_cols, max_block_cols)
+    if block_cols < n_cols:
+        block_cols = max_block_cols
+    return block_cols
+
+
+def reflector_kernel_supported_shape(block_shape: tuple[int, int]) -> bool:
+    m, n = block_shape
+    if m <= 0 or n <= 0:
+        return False
+    block_cols = reflector_kernel_tile_cols(n)
+    return _is_power_of_two(m * block_cols)
+
+
+def compact_panel_kernel_tile_cols(n_cols: int, max_block_cols: int = 128) -> int:
+    block_cols = 1
+    while block_cols < n_cols:
+        block_cols *= 2
+    block_cols = min(block_cols, max_block_cols)
+    if block_cols < n_cols:
+        block_cols = max_block_cols
+    return block_cols
+
+
+def compact_panel_kernel_supported_shape(panel_shape: tuple[int, int], block_shape: tuple[int, int]) -> bool:
+    panel_rows, panel_width = panel_shape
+    block_rows, block_cols = block_shape
+    if panel_rows <= 0 or panel_width < 0 or block_rows <= 0 or block_cols <= 0:
+        return False
+    if panel_rows != block_rows:
+        return False
+    tile_cols = compact_panel_kernel_tile_cols(block_cols)
+    # Triton-backed Pallas in this environment requires power-of-two array sizes.
+    return (
+        _is_power_of_two(panel_rows * tile_cols)
+        and _is_power_of_two(panel_rows * panel_width)
+        and _is_power_of_two(panel_width * panel_width)
+    )
+
+
 def apply_reflector_to_block_pallas_gpu(
     v: jnp.ndarray,
     tau: jnp.ndarray,
@@ -47,25 +106,17 @@ def apply_reflector_to_block_pallas_gpu(
 
     use_pallas = os.environ.get("JAX_GPTQ_USE_PALLAS", "0") == "1"
     if not use_pallas or pl is None or block.shape[1] == 0:
-        w = tau * (v @ block)
-        return block - jnp.outer(v, w)
+        return _dense_reflector_update(v, tau, block)
 
     m, n = block.shape
-    block_cols = 1
-    while block_cols < n:
-        block_cols *= 2
-    block_cols = min(block_cols, 128)
-    if block_cols < n:
-        block_cols = 128
+    block_cols = reflector_kernel_tile_cols(n)
     pad_cols = block_cols - n if n < block_cols else (-n) % block_cols
     block_padded = jnp.pad(block, ((0, 0), (0, pad_cols)))
     n_padded = block_padded.shape[1]
     grid_n = n_padded // block_cols
 
-    tile_elems = m * block_cols
-    if tile_elems & (tile_elems - 1):
-        w = tau * (v @ block)
-        return block - jnp.outer(v, w)
+    if not reflector_kernel_supported_shape(block.shape):
+        return _dense_reflector_update(v, tau, block)
 
     tau_buf = tau.reshape(1)
 
@@ -88,11 +139,9 @@ def apply_reflector_to_block_pallas_gpu(
         block_shape=(m,),
     )
     tau_spec = pl.BlockSpec(
-            index_map=lambda j: (0,),
-            block_shape=(1,),
-            )
-
-    print("reflector kernel shapes:", {"v": v.shape, "block": block.shape, "block_cols": block_cols, "pad_cols": pad_cols})
+        index_map=lambda j: (0,),
+        block_shape=(1,),
+    )
 
     updated_padded = pl.pallas_call(
         kernel,
@@ -128,12 +177,11 @@ def apply_compact_panel_to_block_pallas_gpu(
 
     use_pallas = os.environ.get("JAX_GPTQ_USE_PALLAS", "0") == "1"
     if not use_pallas or pl is None or block.shape[1] == 0:
-        w = panel.y.T @ block
-        w = panel.t.T @ w
-        return block - panel.y @ w
+        return _dense_compact_panel_update(panel, block)
+
+    if not compact_panel_kernel_supported_shape(panel.y.shape, block.shape):
+        return _dense_compact_panel_update(panel, block)
 
     # Keep the compact WY update on the dense JAX reference path until the
-    # simpler Householder primitive is validated on Triton-backed Pallas.
-    w = panel.y.T @ block
-    w = panel.t.T @ w
-    return block - panel.y @ w
+    # Triton-backed version is implemented and validated.
+    return _dense_compact_panel_update(panel, block)
