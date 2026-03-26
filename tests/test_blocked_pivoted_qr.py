@@ -6,6 +6,7 @@ from jax_gptq.pallas.gpu_kernels import (
     compact_panel_kernel_supported_shape,
     reflector_kernel_supported_shape,
 )
+from jax_gptq.pallas.tpu_kernels import tpu_reflector_kernel_supported_shape
 from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_compact_panel_to_block,
     apply_compact_panel_to_block_pallas,
@@ -435,6 +436,36 @@ def test_apply_reflector_to_block_pallas_falls_back_on_unsupported_shape() -> No
     )
     v = jnp.array([1.0, 0.25, -0.5], dtype=jnp.float32)
     tau = jnp.array(0.8, dtype=jnp.float32)
+
+    expected = apply_reflector_to_block(v, tau, block)
+    actual = apply_reflector_to_block_pallas(v, tau, block)
+    assert jnp.allclose(actual, expected, atol=1e-6)
+
+
+def test_apply_reflector_to_block_pallas_matches_reference_tpu_supported_shape() -> None:
+    if os.environ.get("JAX_GPTQ_USE_PALLAS") != "1":
+        return
+    if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") != "tpu":
+        return
+
+    assert tpu_reflector_kernel_supported_shape((8, 128))
+
+    block = jnp.arange(1024.0, dtype=jnp.float32).reshape(8, 128)
+    v = jnp.linspace(0.1, 0.8, 8, dtype=jnp.float32)
+    tau = jnp.array(0.6, dtype=jnp.float32)
+
+    expected = apply_reflector_to_block(v, tau, block)
+    actual = apply_reflector_to_block_pallas(v, tau, block)
+    assert jnp.allclose(actual, expected, atol=5e-4)
+
+
+def test_apply_reflector_to_block_pallas_falls_back_on_tpu_unsupported_shape() -> None:
+    if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") == "tpu":
+        assert not tpu_reflector_kernel_supported_shape((8, 64))
+
+    block = jnp.arange(512.0, dtype=jnp.float32).reshape(8, 64)
+    v = jnp.linspace(0.1, 0.8, 8, dtype=jnp.float32)
+    tau = jnp.array(0.6, dtype=jnp.float32)
 
     expected = apply_reflector_to_block(v, tau, block)
     actual = apply_reflector_to_block_pallas(v, tau, block)
