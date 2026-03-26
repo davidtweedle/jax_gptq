@@ -4,6 +4,7 @@ import os
 from typing import TYPE_CHECKING
 
 import jax
+from jax import lax
 import jax.numpy as jnp
 
 try:
@@ -73,7 +74,12 @@ def apply_reflector_to_block_pallas_tpu(
         block_tile = block_ref[:, :]
         v_local = v_ref[:]
         tau_local = jnp.squeeze(tau_ref[:], axis=0)
-        w = tau_local * jnp.sum(v_local[:, None] * block_tile, axis=0)
+        w = tau_local * jnp.einsum(
+            "m,mn->n",
+            v_local,
+            block_tile,
+            precision=lax.Precision.HIGHEST,
+        )
         updated = block_tile - v_local[:, None] * w[None, :]
         out_ref[:, :] = updated
 
