@@ -70,13 +70,12 @@ def apply_reflector_to_block_pallas_tpu(
     tau_buf = tau.reshape(1)
 
     def kernel(block_ref, v_ref, tau_ref, out_ref):
-        row_idx = jnp.arange(block_ref.shape[0])
-        block_tile = block_ref[row_idx, :]
-        v_local = v_ref[row_idx]
-        tau_local = tau_ref[0]
+        block_tile = block_ref[:, :]
+        v_local = v_ref[:]
+        tau_local = jnp.squeeze(tau_ref[:], axis=0)
         w = tau_local * jnp.sum(v_local[:, None] * block_tile, axis=0)
         updated = block_tile - v_local[:, None] * w[None, :]
-        out_ref[row_idx, :] = updated
+        out_ref[:, :] = updated
 
     out_shape = jax.ShapeDtypeStruct((m, n), block.dtype)
     block_spec = pl.BlockSpec(
