@@ -501,7 +501,8 @@ def test_apply_compact_panel_to_block_pallas_matches_reference_tpu_supported_sha
 
     assert tpu_compact_panel_kernel_supported_shape(panel.y.shape, block.shape)
 
-    expected = apply_compact_panel_to_block(panel, block)
+    # With Y = I and T = 0.1 I, the compact update reduces to 0.9 * block.
+    expected = 0.9 * block
     actual = apply_compact_panel_to_block_pallas(panel, block)
     assert jnp.allclose(actual, expected, atol=5e-4)
 
