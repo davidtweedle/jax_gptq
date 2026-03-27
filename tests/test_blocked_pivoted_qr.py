@@ -7,6 +7,7 @@ from jax_gptq.pallas.gpu_kernels import (
     reflector_kernel_supported_shape,
 )
 from jax_gptq.pallas.tpu_kernels import tpu_reflector_kernel_supported_shape
+from jax_gptq.pallas.tpu_kernels import tpu_compact_panel_kernel_supported_shape
 from jax_gptq.pallas.blocked_pivoted_qr import (
     apply_compact_panel_to_block,
     apply_compact_panel_to_block_pallas,
@@ -483,6 +484,42 @@ def test_apply_reflector_to_block_pallas_matches_reference_tpu_supported_shape_f
     expected = apply_reflector_to_block(v, tau, block)
     actual = apply_reflector_to_block_pallas(v, tau, block)
     assert jnp.allclose(actual, expected, atol=1e-10)
+
+
+def test_apply_compact_panel_to_block_pallas_matches_reference_tpu_supported_shape() -> None:
+    if os.environ.get("JAX_GPTQ_USE_PALLAS") != "1":
+        return
+    if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") != "tpu":
+        return
+
+    y = jnp.eye(8, dtype=jnp.float32)
+    tau = jnp.ones((8,), dtype=jnp.float32) * 0.1
+    t = jnp.diag(tau)
+    panel = build_compact_panel([], panel_start=0, panel_end=0, n_rows=8)
+    panel = panel.__class__(panel_start=0, panel_end=8, y=y, tau=tau, t=t)
+    block = jnp.arange(1024.0, dtype=jnp.float32).reshape(8, 128)
+
+    assert tpu_compact_panel_kernel_supported_shape(panel.y.shape, block.shape)
+
+    expected = apply_compact_panel_to_block(panel, block)
+    actual = apply_compact_panel_to_block_pallas(panel, block)
+    assert jnp.allclose(actual, expected, atol=5e-4)
+
+
+def test_apply_compact_panel_to_block_pallas_falls_back_on_tpu_unsupported_shape() -> None:
+    if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") == "tpu":
+        assert not tpu_compact_panel_kernel_supported_shape((8, 8), (8, 64))
+
+    y = jnp.eye(8, dtype=jnp.float32)
+    tau = jnp.ones((8,), dtype=jnp.float32) * 0.1
+    t = jnp.diag(tau)
+    panel = build_compact_panel([], panel_start=0, panel_end=0, n_rows=8)
+    panel = panel.__class__(panel_start=0, panel_end=8, y=y, tau=tau, t=t)
+    block = jnp.arange(512.0, dtype=jnp.float32).reshape(8, 64)
+
+    expected = apply_compact_panel_to_block(panel, block)
+    actual = apply_compact_panel_to_block_pallas(panel, block)
+    assert jnp.allclose(actual, expected, atol=1e-6)
 
 
 def test_compact_panel_exposed_row_matches_exact_helper() -> None:
