@@ -73,16 +73,13 @@ def apply_reflector_to_block_pallas_tpu(
     def kernel(block_ref, v_ref, tau_ref, out_ref):
         block_tile = block_ref[:, :]
         v_local = v_ref[:]
-        tau_local = jnp.squeeze(tau_ref[:], axis=0)
-        w = tau_local * jnp.squeeze(
-            pl.dot(
-                v_local[None, :],
-                block_tile,
-                precision=lax.Precision.HIGHEST,
-            ),
-            axis=0,
+        tau_local = tau_ref[:]
+        w = tau_local * pl.dot(
+            v_local[None, :],
+            block_tile,
+            precision=lax.Precision.HIGHEST,
         )
-        updated = block_tile - v_local[:, None] * w[None, :]
+        updated = block_tile - v_local[:, None] * w
         out_ref[:, :] = updated
 
     out_shape = jax.ShapeDtypeStruct((m, n), block.dtype)
