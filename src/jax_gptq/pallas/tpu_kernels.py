@@ -64,6 +64,9 @@ def apply_reflector_to_block_pallas_tpu(
     if not use_pallas or pl is None or block.shape[1] == 0:
         return _dense_reflector_update(v, tau, block)
 
+    if block.dtype != jnp.float32:
+        return _dense_reflector_update(v, tau, block)
+
     if not tpu_reflector_kernel_supported_shape(block.shape):
         return _dense_reflector_update(v, tau, block)
 
