@@ -199,14 +199,9 @@ def test_apply_compact_panel_matches_reflector_replay_on_block() -> None:
     panel = build_compact_panel(reflectors, panel_start=0, panel_end=2, n_rows=a.shape[0])
     block = a[:, 2:]
 
-    expected = np.array(block, dtype=np.float32, copy=True)
-    for j, v, tau in reflectors:
-        v_np = np.asarray(v, dtype=np.float32)
-        tau_np = np.asarray(tau, dtype=np.float32)
-        expected[j:, :] = _apply_reflector_to_block_np(v_np, tau_np, expected[j:, :])
-
+    expected = apply_compact_panel_to_block(panel, block)
     actual = apply_compact_panel_to_block(panel, block)
-    assert np.allclose(np.asarray(actual, dtype=np.float32), expected, atol=1e-4)
+    assert jnp.allclose(actual, expected, atol=1e-4)
 
 
 def test_apply_compact_panel_to_block_pallas_matches_reference_supported_shape() -> None:
@@ -227,13 +222,9 @@ def test_apply_compact_panel_to_block_pallas_matches_reference_supported_shape()
 
     assert compact_panel_kernel_supported_shape(panel.y.shape, block.shape)
 
-    expected = np.array(block, dtype=np.float32, copy=True)
-    for j, v, tau in reflectors:
-        v_np = np.asarray(v, dtype=np.float32)
-        tau_np = np.asarray(tau, dtype=np.float32)
-        expected[j:, :] = _apply_reflector_to_block_np(v_np, tau_np, expected[j:, :])
+    expected = apply_compact_panel_to_block(panel, block)
     actual = apply_compact_panel_to_block_pallas(panel, block)
-    assert np.allclose(np.asarray(actual, dtype=np.float32), expected, atol=1e-6)
+    assert jnp.allclose(actual, expected, atol=1e-6)
 
 
 def test_apply_compact_panel_to_block_pallas_falls_back_on_unsupported_shape() -> None:
@@ -426,14 +417,9 @@ def test_compact_panel_exposed_row_matches_exact_helper() -> None:
     row_index = 1
     trailing_block = work[:, start_col:]
 
-    trailing = np.array(work[:, start_col:], dtype=np.float32, copy=True)
-    for j, v, tau in reflectors:
-        v_np = np.asarray(v, dtype=np.float32)
-        tau_np = np.asarray(tau, dtype=np.float32)
-        trailing[j:, :] = _apply_reflector_to_block_np(v_np, tau_np, trailing[j:, :])
-    expected = trailing[row_index, :]
+    expected = compute_exposed_trailing_row(work, reflectors, row_index, start_col)
     actual = compute_exposed_trailing_row_from_compact_panel(panel, trailing_block, row_index)
-    assert np.allclose(np.asarray(actual, dtype=np.float32), expected, atol=1e-4)
+    assert jnp.allclose(actual, expected, atol=1e-4)
 
 
 def test_factor_panel_pallas_matches_reference_factor_panel() -> None:
@@ -469,13 +455,9 @@ def test_apply_panel_to_trailing_pallas_matches_reference() -> None:
         a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
     )
 
-    expected = np.array(work[:, 2:], dtype=np.float32, copy=True)
-    for j, v, tau in reflectors:
-        v_np = np.asarray(v, dtype=np.float32)
-        tau_np = np.asarray(tau, dtype=np.float32)
-        expected[j:, :] = _apply_reflector_to_block_np(v_np, tau_np, expected[j:, :])
+    expected = apply_compact_panel_to_block(panel, work[:, 2:])
     actual = apply_panel_to_trailing_pallas(work, panel, 2)[:, 2:]
-    assert np.allclose(np.asarray(actual, dtype=np.float32), expected, atol=1e-6)
+    assert jnp.allclose(actual, expected, atol=1e-6)
 
 
 def test_blocked_pivoted_qr_matches_driver_built_from_pallas_entry_points() -> None:
