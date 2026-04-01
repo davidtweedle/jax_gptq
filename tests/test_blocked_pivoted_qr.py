@@ -199,7 +199,7 @@ def test_apply_compact_panel_matches_reflector_replay_on_block() -> None:
     panel = build_compact_panel(reflectors, panel_start=0, panel_end=2, n_rows=a.shape[0])
     block = a[:, 2:]
 
-    expected = np.asarray(block, dtype=np.float32)
+    expected = np.array(block, dtype=np.float32, copy=True)
     for j, v, tau in reflectors:
         v_np = np.asarray(v, dtype=np.float32)
         tau_np = np.asarray(tau, dtype=np.float32)
@@ -227,7 +227,7 @@ def test_apply_compact_panel_to_block_pallas_matches_reference_supported_shape()
 
     assert compact_panel_kernel_supported_shape(panel.y.shape, block.shape)
 
-    expected = np.asarray(block, dtype=np.float32)
+    expected = np.array(block, dtype=np.float32, copy=True)
     for j, v, tau in reflectors:
         v_np = np.asarray(v, dtype=np.float32)
         tau_np = np.asarray(tau, dtype=np.float32)
@@ -256,7 +256,7 @@ def test_apply_compact_panel_to_block_pallas_falls_back_on_unsupported_shape() -
 
     assert not compact_panel_kernel_supported_shape(panel.y.shape, block.shape)
 
-    expected = np.asarray(block, dtype=np.float32)
+    expected = np.array(block, dtype=np.float32, copy=True)
     for j, v, tau in reflectors:
         v_np = np.asarray(v, dtype=np.float32)
         tau_np = np.asarray(tau, dtype=np.float32)
@@ -426,7 +426,7 @@ def test_compact_panel_exposed_row_matches_exact_helper() -> None:
     row_index = 1
     trailing_block = work[:, start_col:]
 
-    trailing = np.asarray(work[:, start_col:], dtype=np.float32)
+    trailing = np.array(work[:, start_col:], dtype=np.float32, copy=True)
     for j, v, tau in reflectors:
         v_np = np.asarray(v, dtype=np.float32)
         tau_np = np.asarray(tau, dtype=np.float32)
@@ -469,7 +469,7 @@ def test_apply_panel_to_trailing_pallas_matches_reference() -> None:
         a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
     )
 
-    expected = np.asarray(work[:, 2:], dtype=np.float32)
+    expected = np.array(work[:, 2:], dtype=np.float32, copy=True)
     for j, v, tau in reflectors:
         v_np = np.asarray(v, dtype=np.float32)
         tau_np = np.asarray(tau, dtype=np.float32)
