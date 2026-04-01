@@ -28,6 +28,8 @@ Later blocked version:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from time import perf_counter
 from typing import Literal
 
 import jax
@@ -1084,10 +1086,17 @@ def blocked_pivoted_qr(
 
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = initialize_trailing_norm_metadata(a)
+    timing_enabled = os.environ.get("JAX_GPTQ_QR_TIMING", "0") == "1"
+    factor_panel_total = 0.0
+    apply_panel_total = 0.0
+    refresh_norms_total = 0.0
+    panel_widths: list[int] = []
+    num_panels = 0
 
     work = a
     limit = min(a.shape[0], a.shape[1])
     for k in range(0, limit, panel_size):
+        factor_t0 = perf_counter()
         result = factor_panel_pallas(
             a=work,
             perm=perm,
@@ -1096,13 +1105,40 @@ def blocked_pivoted_qr(
             panel_size=panel_size,
             pivot_mode=pivot_mode,
         )
+        if timing_enabled:
+            result.a.block_until_ready()
+            factor_panel_total += perf_counter() - factor_t0
         work = result.a
         perm = result.perm
         norms = result.norms
         panel = result.panel
 
         panel_end = panel.panel_end
+        panel_widths.append(panel_end - k)
+        num_panels += 1
+        apply_t0 = perf_counter()
         work = apply_panel_to_trailing_pallas(work, panel, panel_end)
+        if timing_enabled:
+            work.block_until_ready()
+            apply_panel_total += perf_counter() - apply_t0
+        refresh_t0 = perf_counter()
         norms = refresh_trailing_norm_metadata(work, panel_end)
+        if timing_enabled:
+            norms.block_until_ready()
+            refresh_norms_total += perf_counter() - refresh_t0
+
+    if timing_enabled:
+        avg_panel_width = (sum(panel_widths) / num_panels) if num_panels else 0.0
+        print(
+            "blocked_pivoted_qr_timing:",
+            {
+                "num_panels": num_panels,
+                "avg_panel_width": avg_panel_width,
+                "panel_widths_head": panel_widths[:8],
+                "factor_panel_total_sec": factor_panel_total,
+                "apply_panel_total_sec": apply_panel_total,
+                "refresh_norms_total_sec": refresh_norms_total,
+            },
+        )
 
     return work, perm
