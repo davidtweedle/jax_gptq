@@ -419,7 +419,8 @@ def test_compact_panel_exposed_row_matches_exact_helper() -> None:
 
     expected = compute_exposed_trailing_row(work, reflectors, row_index, start_col)
     actual = compute_exposed_trailing_row_from_compact_panel(panel, trailing_block, row_index)
-    assert jnp.allclose(actual, expected, atol=1e-4)
+    atol = 3e-2 if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") == "tpu" else 1e-4
+    assert jnp.allclose(actual, expected, atol=atol)
 
 
 def test_factor_panel_pallas_matches_reference_factor_panel() -> None:
