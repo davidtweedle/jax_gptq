@@ -27,6 +27,12 @@ def _dense_compact_panel_update(panel: CompactPanel, block: jnp.ndarray) -> jnp.
     return block - panel.y @ w
 
 
+def _round_up_to_multiple(n: int, multiple: int) -> int:
+    if n <= 0:
+        return 0
+    return ((n + multiple - 1) // multiple) * multiple
+
+
 def tpu_reflector_kernel_supported_shape(block_shape: tuple[int, int]) -> bool:
     m, n = block_shape
     if m <= 0 or n <= 0:
@@ -48,11 +54,10 @@ def tpu_compact_panel_kernel_supported_shape(
         return False
     if panel_rows != block_rows:
         return False
-    # Conservative first pass for TPU Pallas:
-    # - the row dimension should follow the TPU-friendly multiple-of-8 rule
-    # - the compact panel width should be small and regular
-    # - the block width should be a multiple of 128
-    return (panel_rows % 8 == 0) and (panel_width % 8 == 0) and (block_cols % 128 == 0)
+    # Conservative TPU rule:
+    # - keep the row dimension native and aligned to 8
+    # - allow panel width / block width to be padded locally before the kernel
+    return panel_rows % 8 == 0
 
 
 def apply_reflector_to_block_pallas_tpu(
@@ -161,6 +166,17 @@ def apply_compact_panel_to_block_pallas_tpu(
 
     m, n = block.shape
     b = panel.y.shape[1]
+    padded_b = _round_up_to_multiple(b, 8)
+    padded_n = _round_up_to_multiple(n, 128)
+
+    y = panel.y
+    t = panel.t
+    block_padded = block
+    if padded_b != b:
+        y = jnp.pad(y, ((0, 0), (0, padded_b - b)))
+        t = jnp.pad(t, ((0, padded_b - b), (0, padded_b - b)))
+    if padded_n != n:
+        block_padded = jnp.pad(block, ((0, 0), (0, padded_n - n)))
 
     def kernel(block_ref, y_ref, t_ref, out_ref):
         block_tile = block_ref[:, :]
@@ -183,23 +199,24 @@ def apply_compact_panel_to_block_pallas_tpu(
         )
         out_ref[:, :] = updated
 
-    out_shape = jax.ShapeDtypeStruct((m, n), block.dtype)
+    out_shape = jax.ShapeDtypeStruct((m, padded_n), block.dtype)
     block_spec = pl.BlockSpec(
         index_map=lambda: (0, 0),
-        block_shape=(m, n),
+        block_shape=(m, padded_n),
     )
     full_y_spec = pl.BlockSpec(
         index_map=lambda: (0, 0),
-        block_shape=(m, b),
+        block_shape=(m, padded_b),
     )
     full_t_spec = pl.BlockSpec(
         index_map=lambda: (0, 0),
-        block_shape=(b, b),
+        block_shape=(padded_b, padded_b),
     )
 
-    return pl.pallas_call(
+    updated_padded = pl.pallas_call(
         kernel,
         out_shape=out_shape,
         in_specs=[block_spec, full_y_spec, full_t_spec],
         out_specs=block_spec,
-    )(block, panel.y, panel.t)
+    )(block_padded, y, t)
+    return updated_padded[:, :n]
