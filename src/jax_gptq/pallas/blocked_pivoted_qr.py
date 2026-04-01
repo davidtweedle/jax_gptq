@@ -920,28 +920,97 @@ def factor_panel(
     panel_end = state.panel_end
     reflectors: list[tuple[int, jnp.ndarray, jnp.ndarray]] = []
     panel_state = state
-    panel = CompactPanel(
-        panel_start=k,
-        panel_end=k,
-        y=panel_state.y,
-        tau=panel_state.tau,
-        t=panel_state.t,
-    )
-
+    timing_enabled = os.environ.get("JAX_GPTQ_QR_TIMING", "0") == "1"
+    choose_pivot_total = 0.0
+    swap_columns_total = 0.0
+    householder_total = 0.0
+    append_panel_total = 0.0
+    apply_reflector_total = 0.0
+    update_norms_total = 0.0
     for j in range(k, panel_end):
-        a, perm, norms, reflectors, panel_state, should_stop = panel_step(
+        if pivot_mode == "smallest":
+            trailing_norms = norms[j:]
+            if not bool(jnp.any(trailing_norms > 1e-12)):
+                panel_state = PanelState(
+                    a=panel_state.a,
+                    perm=panel_state.perm,
+                    norms=panel_state.norms,
+                    y=panel_state.y,
+                    tau=panel_state.tau,
+                    t=panel_state.t,
+                    k=panel_state.k,
+                    j=j,
+                    panel_end=panel_state.panel_end,
+                    active_cols=panel_state.active_cols,
+                    done=True,
+                )
+                break
+
+        t0 = perf_counter()
+        pivot_col = choose_pivot(norms, j, pivot_mode)
+        if timing_enabled:
+            choose_pivot_total += perf_counter() - t0
+
+        t0 = perf_counter()
+        a, perm, norms = swap_columns(a, perm, norms, j, pivot_col)
+        panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
+        if timing_enabled:
+            a.block_until_ready()
+            swap_columns_total += perf_counter() - t0
+
+        t0 = perf_counter()
+        v, tau, alpha = householder_vector(a[j:, j])
+        if timing_enabled:
+            v.block_until_ready()
+            tau.block_until_ready()
+            alpha.block_until_ready()
+            householder_total += perf_counter() - t0
+
+        reflectors.append((j, v, tau))
+
+        t0 = perf_counter()
+        panel_state = append_reflector_to_panel_state(panel_state, j, v, tau)
+        if timing_enabled:
+            panel_state.y.block_until_ready()
+            append_panel_total += perf_counter() - t0
+
+        panel = CompactPanel(
+            panel_start=k,
+            panel_end=k + panel_state.active_cols + 1,
+            y=panel_state.y,
+            tau=panel_state.tau,
+            t=panel_state.t,
+        )
+
+        t0 = perf_counter()
+        updated_block = apply_reflector_to_block_pallas(v, tau, a[j:, j:panel_end])
+        updated_block = updated_block.at[1:, 0].set(0)
+        updated_block = updated_block.at[0, 0].set(alpha)
+        a = a.at[j:, j:panel_end].set(updated_block)
+        if timing_enabled:
+            a.block_until_ready()
+            apply_reflector_total += perf_counter() - t0
+
+        panel_state = PanelState(
             a=a,
             perm=perm,
             norms=norms,
-            reflectors=reflectors,
-            panel_state=panel_state,
-            k=k,
-            j=j,
-            panel_end=panel_end,
-            pivot_mode=pivot_mode,
+            y=panel_state.y,
+            tau=panel_state.tau,
+            t=panel_state.t,
+            k=panel_state.k,
+            j=j + 1,
+            panel_end=panel_state.panel_end,
+            active_cols=panel_state.active_cols + 1,
+            done=panel_state.done,
         )
-        if should_stop:
-            break
+
+        t0 = perf_counter()
+        norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
+        panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
+        if timing_enabled:
+            norms.block_until_ready()
+            update_norms_total += perf_counter() - t0
 
     final_panel = CompactPanel(
         panel_start=k,
@@ -950,6 +1019,21 @@ def factor_panel(
         tau=panel_state.tau,
         t=panel_state.t,
     )
+    if timing_enabled:
+        print(
+            "factor_panel_timing:",
+            {
+                "panel_start": k,
+                "panel_end": final_panel.panel_end,
+                "active_cols": panel_state.active_cols,
+                "choose_pivot_total_sec": choose_pivot_total,
+                "swap_columns_total_sec": swap_columns_total,
+                "householder_total_sec": householder_total,
+                "append_panel_total_sec": append_panel_total,
+                "apply_reflector_total_sec": apply_reflector_total,
+                "update_norms_total_sec": update_norms_total,
+            },
+        )
     return a, perm, norms, reflectors, final_panel
 
 
