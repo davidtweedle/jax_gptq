@@ -408,10 +408,10 @@ def test_apply_compact_panel_to_block_pallas_matches_reference_tpu_supported_sha
 
 def test_apply_compact_panel_to_block_pallas_falls_back_on_tpu_unsupported_shape() -> None:
     if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") == "tpu":
-        assert not tpu_compact_panel_kernel_supported_shape((8, 8), (8, 64))
+        assert not tpu_compact_panel_kernel_supported_shape((7, 7), (7, 64))
 
-    panel = _identity_diag_panel(n_rows=8, tau_value=0.1)
-    block = jnp.arange(512.0, dtype=jnp.float32).reshape(8, 64)
+    panel = _identity_diag_panel(n_rows=7, tau_value=0.1)
+    block = jnp.arange(448.0, dtype=jnp.float32).reshape(7, 64)
 
     expected = apply_compact_panel_to_block(panel, block)
     actual = apply_compact_panel_to_block_pallas(panel, block)
