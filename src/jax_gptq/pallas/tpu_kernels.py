@@ -16,6 +16,32 @@ if TYPE_CHECKING:
     from .blocked_pivoted_qr import CompactPanel
 
 
+_TPU_KERNEL_DEBUG_COUNTERS = {
+    "reflector_kernel_calls": 0,
+    "reflector_fallback_calls": 0,
+    "compact_panel_kernel_calls": 0,
+    "compact_panel_fallback_calls": 0,
+}
+
+
+def _tpu_kernel_debug_enabled() -> bool:
+    return os.environ.get("JAX_GPTQ_TPU_KERNEL_DEBUG", "0") == "1"
+
+
+def _bump_tpu_kernel_counter(name: str) -> None:
+    if _tpu_kernel_debug_enabled():
+        _TPU_KERNEL_DEBUG_COUNTERS[name] += 1
+
+
+def reset_tpu_kernel_debug_counters() -> None:
+    for name in _TPU_KERNEL_DEBUG_COUNTERS:
+        _TPU_KERNEL_DEBUG_COUNTERS[name] = 0
+
+
+def get_tpu_kernel_debug_counters() -> dict[str, int]:
+    return dict(_TPU_KERNEL_DEBUG_COUNTERS)
+
+
 def _dense_reflector_update(v: jnp.ndarray, tau: jnp.ndarray, block: jnp.ndarray) -> jnp.ndarray:
     w = tau * (v @ block)
     return block - jnp.outer(v, w)
@@ -37,11 +63,10 @@ def tpu_reflector_kernel_supported_shape(block_shape: tuple[int, int]) -> bool:
     m, n = block_shape
     if m <= 0 or n <= 0:
         return False
-    # Conservative first pass for TPU Pallas:
-    # - keep the row dimension fully materialized
-    # - require the trailing tile width to be either 1 or a multiple of 128
-    # - require the row dimension to be a multiple of 8, matching TPU block-shape guidance
-    return (m % 8 == 0) and (n == 1 or n % 128 == 0)
+    # Conservative TPU rule:
+    # - keep the row dimension fully materialized and aligned to 8
+    # - allow the trailing width to be padded locally before the kernel
+    return m % 8 == 0
 
 
 def tpu_compact_panel_kernel_supported_shape(
@@ -90,16 +115,23 @@ def apply_reflector_to_block_pallas_tpu(
 
     use_pallas = os.environ.get("JAX_GPTQ_USE_PALLAS", "0") == "1"
     if not use_pallas or pl is None or block.shape[1] == 0:
+        _bump_tpu_kernel_counter("reflector_fallback_calls")
         return _dense_reflector_update(v, tau, block)
 
     if block.dtype != jnp.float32:
+        _bump_tpu_kernel_counter("reflector_fallback_calls")
         return _dense_reflector_update(v, tau, block)
 
     if not tpu_reflector_kernel_supported_shape(block.shape):
+        _bump_tpu_kernel_counter("reflector_fallback_calls")
         return _dense_reflector_update(v, tau, block)
 
     m, n = block.shape
+    padded_n = _round_up_to_multiple(n, 128)
     tau_buf = tau.reshape(1)
+    block_padded = block
+    if padded_n != n:
+        block_padded = jnp.pad(block, ((0, 0), (0, padded_n - n)))
 
     def kernel(block_ref, v_ref, tau_ref, out_ref):
         block_tile = block_ref[:, :]
@@ -113,10 +145,10 @@ def apply_reflector_to_block_pallas_tpu(
         updated = block_tile - v_local[:, None] * w
         out_ref[:, :] = updated
 
-    out_shape = jax.ShapeDtypeStruct((m, n), block.dtype)
+    out_shape = jax.ShapeDtypeStruct((m, padded_n), block.dtype)
     block_spec = pl.BlockSpec(
         index_map=lambda: (0, 0),
-        block_shape=(m, n),
+        block_shape=(m, padded_n),
     )
     full_v_spec = pl.BlockSpec(
         index_map=lambda: (0,),
@@ -127,12 +159,14 @@ def apply_reflector_to_block_pallas_tpu(
         block_shape=(1,),
     )
 
-    return pl.pallas_call(
+    _bump_tpu_kernel_counter("reflector_kernel_calls")
+    updated_padded = pl.pallas_call(
         kernel,
         out_shape=out_shape,
         in_specs=[block_spec, full_v_spec, tau_spec],
         out_specs=block_spec,
-    )(block, v, tau_buf)
+    )(block_padded, v, tau_buf)
+    return updated_padded[:, :n]
 
 
 def apply_compact_panel_to_block_pallas_tpu(
@@ -156,12 +190,15 @@ def apply_compact_panel_to_block_pallas_tpu(
 
     use_pallas = os.environ.get("JAX_GPTQ_USE_PALLAS", "0") == "1"
     if not use_pallas or pl is None or block.shape[1] == 0:
+        _bump_tpu_kernel_counter("compact_panel_fallback_calls")
         return _dense_compact_panel_update(panel, block)
 
     if block.dtype != jnp.float32:
+        _bump_tpu_kernel_counter("compact_panel_fallback_calls")
         return _dense_compact_panel_update(panel, block)
 
     if not tpu_compact_panel_kernel_supported_shape(panel.y.shape, block.shape):
+        _bump_tpu_kernel_counter("compact_panel_fallback_calls")
         return _dense_compact_panel_update(panel, block)
 
     m, n = block.shape
@@ -213,6 +250,7 @@ def apply_compact_panel_to_block_pallas_tpu(
         block_shape=(padded_b, padded_b),
     )
 
+    _bump_tpu_kernel_counter("compact_panel_kernel_calls")
     updated_padded = pl.pallas_call(
         kernel,
         out_shape=out_shape,

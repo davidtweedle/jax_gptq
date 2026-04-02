@@ -43,6 +43,7 @@ from .gpu_kernels import (
 from .tpu_kernels import (
     apply_compact_panel_to_block_pallas_tpu,
     apply_reflector_to_block_pallas_tpu,
+    get_tpu_kernel_debug_counters,
 )
 
 PivotMode = Literal["largest", "smallest"]
@@ -667,8 +668,25 @@ def compute_exposed_trailing_row_from_compact_panel(
 
     This is the compact counterpart to `compute_exposed_trailing_row`.
     """
-    transformed = apply_compact_panel_to_block(panel, trailing_block)
-    return transformed[row_index, :]
+    trailing_block = jnp.asarray(trailing_block)
+    if trailing_block.ndim != 2:
+        raise ValueError(f"trailing_block must be 2D, got {trailing_block.shape}")
+    if trailing_block.shape[0] != panel.y.shape[0]:
+        raise ValueError(
+            "trailing_block row dimension must match panel rows, "
+            f"got {trailing_block.shape[0]} and {panel.y.shape[0]}"
+        )
+    if not 0 <= row_index < trailing_block.shape[0]:
+        raise ValueError(
+            f"row_index must be in [0, {trailing_block.shape[0]}), got {row_index}"
+        )
+
+    # For one exposed row j, use
+    # B'[j, :] = B[j, :] - (Y[j, :] T^T Y^T) B
+    row_weights = panel.y[row_index, :] @ panel.t.T
+    left = row_weights @ panel.y.T
+    row_update = left @ trailing_block
+    return trailing_block[row_index, :] - row_update
 
 
 def update_norms_from_reflectors(
@@ -1021,19 +1039,15 @@ def factor_panel(
     )
     if timing_enabled:
         print(
-            "factor_panel_timing:",
-            {
-                "panel_start": k,
-                "panel_end": final_panel.panel_end,
-                "active_cols": panel_state.active_cols,
-                "choose_pivot_total_sec": choose_pivot_total,
-                "swap_columns_total_sec": swap_columns_total,
-                "householder_total_sec": householder_total,
-                "append_panel_total_sec": append_panel_total,
-                "apply_reflector_total_sec": apply_reflector_total,
-                "update_norms_total_sec": update_norms_total,
-            },
+            f"factor_panel_timing panel=[{k},{final_panel.panel_end}) "
+            f"active_cols={panel_state.active_cols}"
         )
+        print(f"  choose_pivot_sec={choose_pivot_total:.6f}")
+        print(f"  swap_columns_sec={swap_columns_total:.6f}")
+        print(f"  householder_sec={householder_total:.6f}")
+        print(f"  append_panel_sec={append_panel_total:.6f}")
+        print(f"  apply_reflector_sec={apply_reflector_total:.6f}")
+        print(f"  update_norms_sec={update_norms_total:.6f}")
     return a, perm, norms, reflectors, final_panel
 
 
@@ -1213,16 +1227,19 @@ def blocked_pivoted_qr(
 
     if timing_enabled:
         avg_panel_width = (sum(panel_widths) / num_panels) if num_panels else 0.0
-        print(
-            "blocked_pivoted_qr_timing:",
-            {
-                "num_panels": num_panels,
-                "avg_panel_width": avg_panel_width,
-                "panel_widths_head": panel_widths[:8],
-                "factor_panel_total_sec": factor_panel_total,
-                "apply_panel_total_sec": apply_panel_total,
-                "refresh_norms_total_sec": refresh_norms_total,
-            },
-        )
+        print("blocked_pivoted_qr_timing")
+        print(f"  num_panels={num_panels}")
+        print(f"  avg_panel_width={avg_panel_width:.2f}")
+        print(f"  panel_widths_head={panel_widths[:8]}")
+        print(f"  factor_panel_total_sec={factor_panel_total:.6f}")
+        print(f"  apply_panel_total_sec={apply_panel_total:.6f}")
+        print(f"  refresh_norms_total_sec={refresh_norms_total:.6f}")
+        if os.environ.get("JAX_GPTQ_TPU_KERNEL_DEBUG", "0") == "1":
+            counters = get_tpu_kernel_debug_counters()
+            print("tpu_kernel_counters")
+            print(f"  reflector_kernel_calls={counters['reflector_kernel_calls']}")
+            print(f"  reflector_fallback_calls={counters['reflector_fallback_calls']}")
+            print(f"  compact_panel_kernel_calls={counters['compact_panel_kernel_calls']}")
+            print(f"  compact_panel_fallback_calls={counters['compact_panel_fallback_calls']}")
 
     return work, perm

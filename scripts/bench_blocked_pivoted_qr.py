@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from jax_gptq.pallas.blocked_pivoted_qr import blocked_pivoted_qr
+from jax_gptq.pallas.tpu_kernels import reset_tpu_kernel_debug_counters
 
 
 def main() -> None:
@@ -18,6 +19,7 @@ def main() -> None:
 
     key = jax.random.PRNGKey(args.seed)
     a = jax.random.normal(key, (args.rows, args.cols), dtype=jnp.float32)
+    reset_tpu_kernel_debug_counters()
 
     t0 = time.time()
     work, perm = blocked_pivoted_qr(
