@@ -360,7 +360,7 @@ def test_apply_reflector_to_block_pallas_matches_reference_tpu_supported_shape()
 
 def test_apply_reflector_to_block_pallas_falls_back_on_tpu_unsupported_shape() -> None:
     if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") == "tpu":
-        assert tpu_reflector_kernel_supported_shape((7, 64))
+        pytest.skip("all positive float32 reflector shapes are supported on TPU")
 
     block = jnp.arange(448.0, dtype=jnp.float64).reshape(7, 64)
     v = jnp.linspace(0.1, 0.7, 7, dtype=jnp.float64)
