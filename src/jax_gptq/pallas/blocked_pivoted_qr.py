@@ -183,15 +183,17 @@ def choose_pivot_dynamic(
     pivot_mode: PivotMode,
     zero_tol: float = 1e-12,
 ) -> jnp.ndarray:
-    trailing_norms = norms[j:]
+    idx = jnp.arange(norms.shape[0], dtype=jnp.int32)
+    trailing_mask = idx >= j
     if pivot_mode == "largest":
-        pivot_offset = jnp.argmax(trailing_norms)
+        masked_norms = jnp.where(trailing_mask, norms, -jnp.inf)
+        return jnp.argmax(masked_norms).astype(jnp.int32)
     elif pivot_mode == "smallest":
-        masked_norms = jnp.where(trailing_norms > zero_tol, trailing_norms, jnp.inf)
-        pivot_offset = jnp.argmin(masked_norms)
+        positive_mask = trailing_mask & (norms > zero_tol)
+        masked_norms = jnp.where(positive_mask, norms, jnp.inf)
+        return jnp.argmin(masked_norms).astype(jnp.int32)
     else:
         raise ValueError(f"unsupported pivot_mode={pivot_mode}")
-    return jnp.asarray(j, dtype=jnp.int32) + pivot_offset.astype(jnp.int32)
 
 
 def swap_columns(
@@ -293,6 +295,38 @@ def householder_vector(x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.nd
         beta = x0 - alpha
         v = x / beta
         v = v.at[0].set(1)
+        tau = -beta / alpha
+        return v, tau, alpha
+
+    return jax.lax.cond(sigma == 0, trivial_case, reflector_case, operand=None)
+
+
+def householder_vector_dynamic(
+    a: jnp.ndarray,
+    j: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    m = a.shape[0]
+    col = jax.lax.dynamic_slice(a, (0, j), (m, 1)).reshape((m,))
+    row_idx = jnp.arange(m, dtype=jnp.int32)
+    active_mask = row_idx >= j
+    tail_mask = row_idx > j
+
+    x0 = col[j]
+    x_tail = jnp.where(tail_mask, col, 0)
+    sigma = jnp.dot(x_tail, x_tail)
+
+    def trivial_case(_: None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        v = jnp.zeros_like(col).at[j].set(1)
+        tau = jnp.array(0, dtype=col.dtype)
+        alpha = x0
+        return v, tau, alpha
+
+    def reflector_case(_: None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        norm_x = jnp.sqrt(x0 * x0 + sigma)
+        alpha = jnp.where(x0 <= 0, norm_x, -norm_x)
+        beta = x0 - alpha
+        scaled = jnp.where(active_mask, col / beta, 0)
+        v = scaled.at[j].set(1)
         tau = -beta / alpha
         return v, tau, alpha
 
@@ -560,9 +594,24 @@ def append_reflector_to_panel_state(
         )
 
     local_idx = j - state.k
-    y = state.y.at[j:, local_idx].set(v)
-    tau = state.tau.at[local_idx].set(tau_j)
-    t = state.t.at[local_idx, local_idx].set(tau_j)
+    y_col = jnp.zeros((state.y.shape[0],), dtype=state.y.dtype)
+    y_col = jax.lax.dynamic_update_slice_in_dim(y_col, v, j, axis=0)
+    y = jax.lax.dynamic_update_slice(
+        state.y,
+        y_col[:, None],
+        (0, local_idx),
+    )
+
+    tau = jax.lax.dynamic_update_slice(
+        state.tau,
+        tau_j.reshape(1),
+        (local_idx,),
+    )
+    t = jax.lax.dynamic_update_slice(
+        state.t,
+        tau_j.reshape(1, 1),
+        (local_idx, local_idx),
+    )
 
     if local_idx > 0:
         y_i = y[:, local_idx]
@@ -570,6 +619,61 @@ def append_reflector_to_panel_state(
         if local_idx > 1:
             w = t[:local_idx, :local_idx] @ w
         t = t.at[:local_idx, local_idx].set(w)
+
+    return PanelState(
+        a=state.a,
+        perm=state.perm,
+        norms=state.norms,
+        y=y,
+        tau=tau,
+        t=t,
+        k=state.k,
+        j=state.j,
+        panel_end=state.panel_end,
+        active_cols=state.active_cols,
+        done=state.done,
+    )
+
+
+def append_reflector_to_panel_state_dynamic(
+    state: PanelState,
+    j: jnp.ndarray,
+    v: jnp.ndarray,
+    tau_j: jnp.ndarray,
+) -> PanelState:
+    local_idx = j - state.k
+    width = state.y.shape[1]
+    col_idx = jnp.arange(width, dtype=jnp.int32)
+    prev_mask = col_idx < local_idx
+
+    y = jax.lax.dynamic_update_slice(
+        state.y,
+        v[:, None],
+        (0, local_idx),
+    )
+
+    tau = jax.lax.dynamic_update_slice(
+        state.tau,
+        tau_j.reshape(1),
+        (local_idx,),
+    )
+    t = jax.lax.dynamic_update_slice(
+        state.t,
+        tau_j.reshape(1, 1),
+        (local_idx, local_idx),
+    )
+
+    y_i = jax.lax.dynamic_slice(y, (0, local_idx), (y.shape[0], 1)).reshape((y.shape[0],))
+    y_prev = jnp.where(prev_mask[None, :], y, 0)
+    w_full = -tau_j * (y_prev.T @ y_i)
+    t_prev = jnp.where(prev_mask[:, None] & prev_mask[None, :], t, 0)
+    w_full = t_prev @ w_full
+    col_update = jnp.where(prev_mask, w_full, t[:, local_idx])
+    t = jax.lax.dynamic_update_slice(
+        t,
+        col_update.reshape((-1, 1)),
+        (0, local_idx),
+    )
 
     return PanelState(
         a=state.a,
@@ -641,6 +745,37 @@ def update_panel_state_after_norms(
         active_cols=state.active_cols,
         done=state.done,
     )
+
+
+def apply_reflector_to_panel_block_dynamic(
+    a: jnp.ndarray,
+    k: int,
+    j: jnp.ndarray,
+    panel_end: int,
+    v: jnp.ndarray,
+    tau: jnp.ndarray,
+    alpha: jnp.ndarray,
+) -> jnp.ndarray:
+    m = a.shape[0]
+    panel_block = a[:, k:panel_end]
+    updated_panel = apply_reflector_to_block_pallas(v, tau, panel_block)
+
+    col_idx = jnp.arange(k, panel_end, dtype=jnp.int32)
+    active_col_mask = col_idx >= j
+    panel_block = jnp.where(active_col_mask[None, :], updated_panel, panel_block)
+
+    local_idx = j - k
+    pivot_col = jax.lax.dynamic_slice(panel_block, (0, local_idx), (m, 1)).reshape((m,))
+    row_idx = jnp.arange(m, dtype=jnp.int32)
+    pivot_col = jnp.where(row_idx > j, 0, pivot_col)
+    pivot_col = jnp.where(row_idx == j, alpha, pivot_col)
+    panel_block = jax.lax.dynamic_update_slice(
+        panel_block,
+        pivot_col[:, None],
+        (0, local_idx),
+    )
+
+    return a.at[:, k:panel_end].set(panel_block)
 
 
 def apply_compact_panel_to_block(
@@ -830,21 +965,34 @@ def update_trailing_norm_metadata_in_panel(
     next_col = j + 1
     panel_stop = min(panel_end, a.shape[1])
 
-    if next_col < panel_stop:
-        panel_block = a[next_col:, next_col:panel_stop]
-        panel_norms = jnp.linalg.norm(panel_block, axis=0)
-        norms = norms.at[next_col:panel_stop].set(panel_norms)
+    def update_panel_norms(norms_in: jnp.ndarray) -> jnp.ndarray:
+        col_idx = jnp.arange(a.shape[1], dtype=jnp.int32)
+        row_idx = jnp.arange(a.shape[0], dtype=jnp.int32)
+        panel_col_mask = (col_idx >= next_col) & (col_idx < panel_stop)
+        panel_row_mask = row_idx[:, None] >= col_idx[None, :]
+        masked_panel = jnp.where(panel_row_mask & panel_col_mask[None, :], a, 0)
+        panel_norms_full = jnp.linalg.norm(masked_panel, axis=0)
+        return jnp.where(panel_col_mask, panel_norms_full, norms_in)
 
-    if panel_stop < a.shape[1]:
+    norms = jax.lax.cond(next_col < panel_stop, update_panel_norms, lambda x: x, norms)
+
+    def update_trailing_norms(norms_in: jnp.ndarray) -> jnp.ndarray:
+        trailing_block = jax.lax.dynamic_slice(
+            a,
+            (0, panel_stop),
+            (a.shape[0], a.shape[1] - panel_stop),
+        )
         exposed_row = compute_exposed_trailing_row_from_compact_panel(
             panel,
-            a[:, panel_stop:],
+            trailing_block,
             j,
         )
-        current_sq = jnp.square(norms[panel_stop:])
+        current_sq = jnp.square(jax.lax.dynamic_slice(norms_in, (panel_stop,), (a.shape[1] - panel_stop,)))
         updated_sq = jnp.maximum(current_sq - jnp.square(exposed_row), 0)
         updated = jnp.sqrt(updated_sq)
-        norms = norms.at[panel_stop:].set(updated)
+        return jax.lax.dynamic_update_slice(norms_in, updated, (panel_stop,))
+
+    norms = jax.lax.cond(panel_stop < a.shape[1], update_trailing_norms, lambda x: x, norms)
     return norms
 
 
@@ -1200,16 +1348,13 @@ def _factor_panel_compiled(
     panel_state = state
     if pivot_mode != "largest":
         raise ValueError("_factor_panel_compiled currently supports pivot_mode='largest' only")
-
-    def body_fun(j, carry):
-        a, perm, norms, panel_state = carry
-
+    for j in range(k, panel_end):
         pivot_col = choose_pivot_dynamic(norms, j, pivot_mode)
         a, perm, norms = swap_columns_dynamic(a, perm, norms, j, pivot_col)
         panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
 
-        v, tau, alpha = householder_vector(a[j:, j])
-        panel_state = append_reflector_to_panel_state(panel_state, j, v, tau)
+        v, tau, alpha = householder_vector_dynamic(a, j)
+        panel_state = append_reflector_to_panel_state_dynamic(panel_state, j, v, tau)
         panel = CompactPanel(
             panel_start=k,
             panel_end=k + panel_state.active_cols + 1,
@@ -1218,10 +1363,7 @@ def _factor_panel_compiled(
             t=panel_state.t,
         )
 
-        updated_block = apply_reflector_to_block_pallas(v, tau, a[j:, j:panel_end])
-        updated_block = updated_block.at[1:, 0].set(0)
-        updated_block = updated_block.at[0, 0].set(alpha)
-        a = a.at[j:, j:panel_end].set(updated_block)
+        a = apply_reflector_to_panel_block_dynamic(a, k, j, panel_end, v, tau, alpha)
 
         panel_state = PanelState(
             a=a,
@@ -1239,14 +1381,6 @@ def _factor_panel_compiled(
 
         norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
         panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
-        return a, perm, norms, panel_state
-
-    a, perm, norms, panel_state = jax.lax.fori_loop(
-        k,
-        panel_end,
-        body_fun,
-        (a, perm, norms, panel_state),
-    )
 
     final_panel = CompactPanel(
         panel_start=k,
