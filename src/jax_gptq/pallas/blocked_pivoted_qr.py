@@ -28,6 +28,7 @@ Later blocked version:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 import os
 from time import perf_counter
 from typing import Literal
@@ -49,6 +50,7 @@ from .tpu_kernels import (
 PivotMode = Literal["largest", "smallest"]
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class CompactPanel:
     panel_start: int
@@ -58,6 +60,7 @@ class CompactPanel:
     t: jnp.ndarray
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class PanelState:
     a: jnp.ndarray
@@ -174,6 +177,23 @@ def choose_pivot(
     return int(j + pivot_offset)
 
 
+def choose_pivot_dynamic(
+    norms: jnp.ndarray,
+    j: int,
+    pivot_mode: PivotMode,
+    zero_tol: float = 1e-12,
+) -> jnp.ndarray:
+    trailing_norms = norms[j:]
+    if pivot_mode == "largest":
+        pivot_offset = jnp.argmax(trailing_norms)
+    elif pivot_mode == "smallest":
+        masked_norms = jnp.where(trailing_norms > zero_tol, trailing_norms, jnp.inf)
+        pivot_offset = jnp.argmin(masked_norms)
+    else:
+        raise ValueError(f"unsupported pivot_mode={pivot_mode}")
+    return jnp.asarray(j, dtype=jnp.int32) + pivot_offset.astype(jnp.int32)
+
+
 def swap_columns(
     a: jnp.ndarray,
     perm: jnp.ndarray,
@@ -214,6 +234,28 @@ def swap_columns(
     perm = perm.at[orig_pos].set(perm[swap_pos])
     norms = norms.at[orig_pos].set(norms[swap_pos])
     return a, perm, norms
+
+
+def swap_columns_dynamic(
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    j: int,
+    pivot_col: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def no_swap(args):
+        return args
+
+    def do_swap(args):
+        a, perm, norms = args
+        orig_pos = jnp.array([j, pivot_col], dtype=jnp.int32)
+        swap_pos = jnp.array([pivot_col, j], dtype=jnp.int32)
+        a = a.at[:, orig_pos].set(a[:, swap_pos])
+        perm = perm.at[orig_pos].set(perm[swap_pos])
+        norms = norms.at[orig_pos].set(norms[swap_pos])
+        return a, perm, norms
+
+    return jax.lax.cond(pivot_col == j, no_swap, do_swap, (a, perm, norms))
 
 
 def householder_vector(x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -1108,14 +1150,30 @@ def factor_panel_pallas(
     - `FactorPanelResult` containing the updated work state and the compact
       panel object needed by the deferred trailing-update kernel
     """
-    a_out, perm_out, norms_out, reflectors, panel = factor_panel(
-        a=a,
-        perm=perm,
-        norms=norms,
-        k=k,
-        panel_size=panel_size,
-        pivot_mode=pivot_mode,
-    )
+    timing_enabled = os.environ.get("JAX_GPTQ_QR_TIMING", "0") == "1"
+    if pivot_mode == "largest" and not timing_enabled:
+        a_out, perm_out, norms_out, panel = _factor_panel_compiled(
+            a=a,
+            perm=perm,
+            norms=norms,
+            k=k,
+            panel_size=panel_size,
+            pivot_mode=pivot_mode,
+        )
+        panel_end_int = int(jax.device_get(panel.panel_end))
+        reflectors = []
+        for local_idx in range(panel_end_int - k):
+            j = k + local_idx
+            reflectors.append((j, panel.y[j:, local_idx], panel.tau[local_idx]))
+    else:
+        a_out, perm_out, norms_out, reflectors, panel = factor_panel(
+            a=a,
+            perm=perm,
+            norms=norms,
+            k=k,
+            panel_size=panel_size,
+            pivot_mode=pivot_mode,
+        )
     return FactorPanelResult(
         a=a_out,
         perm=perm_out,
@@ -1123,6 +1181,87 @@ def factor_panel_pallas(
         reflectors=reflectors,
         panel=panel,
     )
+
+
+@partial(jax.jit, static_argnames=("k", "panel_size", "pivot_mode"))
+def _factor_panel_compiled(
+    a: jnp.ndarray,
+    perm: jnp.ndarray,
+    norms: jnp.ndarray,
+    k: int,
+    panel_size: int,
+    pivot_mode: PivotMode,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, CompactPanel]:
+    state = init_panel_state(a=a, perm=perm, norms=norms, k=k, panel_size=panel_size)
+    a = state.a
+    perm = state.perm
+    norms = state.norms
+    panel_end = state.panel_end
+    panel_state = state
+
+    for j in range(k, panel_end):
+        if pivot_mode == "smallest":
+            trailing_norms = norms[j:]
+            if not bool(jnp.any(trailing_norms > 1e-12)):
+                panel_state = PanelState(
+                    a=panel_state.a,
+                    perm=panel_state.perm,
+                    norms=panel_state.norms,
+                    y=panel_state.y,
+                    tau=panel_state.tau,
+                    t=panel_state.t,
+                    k=panel_state.k,
+                    j=j,
+                    panel_end=panel_state.panel_end,
+                    active_cols=panel_state.active_cols,
+                    done=True,
+                )
+                break
+
+        pivot_col = choose_pivot_dynamic(norms, j, pivot_mode)
+        a, perm, norms = swap_columns_dynamic(a, perm, norms, j, pivot_col)
+        panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
+
+        v, tau, alpha = householder_vector(a[j:, j])
+        panel_state = append_reflector_to_panel_state(panel_state, j, v, tau)
+        panel = CompactPanel(
+            panel_start=k,
+            panel_end=k + panel_state.active_cols + 1,
+            y=panel_state.y,
+            tau=panel_state.tau,
+            t=panel_state.t,
+        )
+
+        updated_block = apply_reflector_to_block_pallas(v, tau, a[j:, j:panel_end])
+        updated_block = updated_block.at[1:, 0].set(0)
+        updated_block = updated_block.at[0, 0].set(alpha)
+        a = a.at[j:, j:panel_end].set(updated_block)
+
+        panel_state = PanelState(
+            a=a,
+            perm=perm,
+            norms=norms,
+            y=panel_state.y,
+            tau=panel_state.tau,
+            t=panel_state.t,
+            k=panel_state.k,
+            j=j + 1,
+            panel_end=panel_state.panel_end,
+            active_cols=panel_state.active_cols + 1,
+            done=panel_state.done,
+        )
+
+        norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
+        panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
+
+    final_panel = CompactPanel(
+        panel_start=k,
+        panel_end=k + panel_state.active_cols,
+        y=panel_state.y,
+        tau=panel_state.tau,
+        t=panel_state.t,
+    )
+    return a, perm, norms, final_panel
 
 
 def apply_panel_to_trailing_pallas(
