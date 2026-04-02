@@ -64,9 +64,9 @@ def tpu_reflector_kernel_supported_shape(block_shape: tuple[int, int]) -> bool:
     if m <= 0 or n <= 0:
         return False
     # Conservative TPU rule:
-    # - keep the row dimension fully materialized and aligned to 8
-    # - allow the trailing width to be padded locally before the kernel
-    return m % 8 == 0
+    # - allow both row and width dimensions to be padded locally before the
+    #   kernel
+    return True
 
 
 def tpu_compact_panel_kernel_supported_shape(
@@ -127,11 +127,16 @@ def apply_reflector_to_block_pallas_tpu(
         return _dense_reflector_update(v, tau, block)
 
     m, n = block.shape
+    padded_m = _round_up_to_multiple(m, 8)
     padded_n = _round_up_to_multiple(n, 128)
     tau_buf = tau.reshape(1)
+    v_padded = v
     block_padded = block
+    if padded_m != m:
+        v_padded = jnp.pad(v, ((0, padded_m - m),))
+        block_padded = jnp.pad(block_padded, ((0, padded_m - m), (0, 0)))
     if padded_n != n:
-        block_padded = jnp.pad(block, ((0, 0), (0, padded_n - n)))
+        block_padded = jnp.pad(block_padded, ((0, 0), (0, padded_n - n)))
 
     def kernel(block_ref, v_ref, tau_ref, out_ref):
         block_tile = block_ref[:, :]
@@ -145,14 +150,14 @@ def apply_reflector_to_block_pallas_tpu(
         updated = block_tile - v_local[:, None] * w
         out_ref[:, :] = updated
 
-    out_shape = jax.ShapeDtypeStruct((m, padded_n), block.dtype)
+    out_shape = jax.ShapeDtypeStruct((padded_m, padded_n), block.dtype)
     block_spec = pl.BlockSpec(
         index_map=lambda: (0, 0),
-        block_shape=(m, padded_n),
+        block_shape=(padded_m, padded_n),
     )
     full_v_spec = pl.BlockSpec(
         index_map=lambda: (0,),
-        block_shape=(m,),
+        block_shape=(padded_m,),
     )
     tau_spec = pl.BlockSpec(
         index_map=lambda: (0,),
@@ -165,8 +170,8 @@ def apply_reflector_to_block_pallas_tpu(
         out_shape=out_shape,
         in_specs=[block_spec, full_v_spec, tau_spec],
         out_specs=block_spec,
-    )(block_padded, v, tau_buf)
-    return updated_padded[:, :n]
+    )(block_padded, v_padded, tau_buf)
+    return updated_padded[:m, :n]
 
 
 def apply_compact_panel_to_block_pallas_tpu(
