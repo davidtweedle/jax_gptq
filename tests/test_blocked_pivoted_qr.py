@@ -360,15 +360,15 @@ def test_apply_reflector_to_block_pallas_matches_reference_tpu_supported_shape()
 
 def test_apply_reflector_to_block_pallas_falls_back_on_tpu_unsupported_shape() -> None:
     if os.environ.get("JAX_GPTQ_KERNEL_BACKEND") == "tpu":
-        assert not tpu_reflector_kernel_supported_shape((7, 64))
+        assert tpu_reflector_kernel_supported_shape((7, 64))
 
-    block = jnp.arange(448.0, dtype=jnp.float32).reshape(7, 64)
-    v = jnp.linspace(0.1, 0.7, 7, dtype=jnp.float32)
-    tau = jnp.array(0.6, dtype=jnp.float32)
+    block = jnp.arange(448.0, dtype=jnp.float64).reshape(7, 64)
+    v = jnp.linspace(0.1, 0.7, 7, dtype=jnp.float64)
+    tau = jnp.array(0.6, dtype=jnp.float64)
 
     expected = apply_reflector_to_block(v, tau, block)
     actual = apply_reflector_to_block_pallas(v, tau, block)
-    assert jnp.allclose(actual, expected, atol=1e-6)
+    assert jnp.allclose(actual, expected, atol=1e-10)
 
 
 def test_apply_reflector_to_block_pallas_matches_reference_tpu_supported_shape_float64() -> None:
