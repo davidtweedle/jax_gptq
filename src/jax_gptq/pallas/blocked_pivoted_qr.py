@@ -1198,25 +1198,11 @@ def _factor_panel_compiled(
     norms = state.norms
     panel_end = state.panel_end
     panel_state = state
+    if pivot_mode != "largest":
+        raise ValueError("_factor_panel_compiled currently supports pivot_mode='largest' only")
 
-    for j in range(k, panel_end):
-        if pivot_mode == "smallest":
-            trailing_norms = norms[j:]
-            if not bool(jnp.any(trailing_norms > 1e-12)):
-                panel_state = PanelState(
-                    a=panel_state.a,
-                    perm=panel_state.perm,
-                    norms=panel_state.norms,
-                    y=panel_state.y,
-                    tau=panel_state.tau,
-                    t=panel_state.t,
-                    k=panel_state.k,
-                    j=j,
-                    panel_end=panel_state.panel_end,
-                    active_cols=panel_state.active_cols,
-                    done=True,
-                )
-                break
+    def body_fun(j, carry):
+        a, perm, norms, panel_state = carry
 
         pivot_col = choose_pivot_dynamic(norms, j, pivot_mode)
         a, perm, norms = swap_columns_dynamic(a, perm, norms, j, pivot_col)
@@ -1253,6 +1239,14 @@ def _factor_panel_compiled(
 
         norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
         panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
+        return a, perm, norms, panel_state
+
+    a, perm, norms, panel_state = jax.lax.fori_loop(
+        k,
+        panel_end,
+        body_fun,
+        (a, perm, norms, panel_state),
+    )
 
     final_panel = CompactPanel(
         panel_start=k,
