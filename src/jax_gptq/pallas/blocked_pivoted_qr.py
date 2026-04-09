@@ -1017,6 +1017,7 @@ def update_trailing_norm_metadata_in_panel(
     j: int,
     panel: CompactPanel,
     panel_end: int,
+    pivot_mode: PivotMode = "largest",
 ) -> jnp.ndarray:
     """
     Update trailing norm metadata during panel factorization.
@@ -1026,7 +1027,9 @@ def update_trailing_norm_metadata_in_panel(
       compact panel
     - downdates remaining panel-column squared scores every step
     - refreshes panel-column squared scores exactly every 8 completed
-      in-panel steps
+      in-panel steps for `pivot_mode="largest"`
+    - refreshes panel-column squared scores exactly every step for
+      `pivot_mode="smallest"`
     - updates deferred trailing-column squared scores from the exact exposed row
 
     Later blocked version:
@@ -1043,7 +1046,7 @@ def update_trailing_norm_metadata_in_panel(
         raise ValueError(f"panel_end must be in [0, {a.shape[1]}], got {panel_end}")
     next_col = j + 1
     panel_stop = min(panel_end, a.shape[1])
-    panel_refresh_period = 8
+    panel_refresh_period = 1 if pivot_mode == "smallest" else 8
 
     def do_update(norms_in: jnp.ndarray) -> jnp.ndarray:
         def update_panel_norms(norms_inner: jnp.ndarray) -> jnp.ndarray:
@@ -1196,7 +1199,14 @@ def panel_step(
         done=panel_state.done,
     )
 
-    norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
+    norms = update_trailing_norm_metadata_in_panel(
+        a,
+        norms,
+        j,
+        panel,
+        panel_end,
+        pivot_mode=pivot_mode,
+    )
     panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
     return a, perm, norms, reflectors, panel_state, False
 
@@ -1341,7 +1351,14 @@ def factor_panel(
         )
 
         t0 = perf_counter()
-        norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
+        norms = update_trailing_norm_metadata_in_panel(
+            a,
+            norms,
+            j,
+            panel,
+            panel_end,
+            pivot_mode=pivot_mode,
+        )
         panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
         if timing_enabled:
             norms.block_until_ready()
@@ -1533,7 +1550,14 @@ def _factor_panel_compiled(
                     done=panel_state.done,
                 )
 
-                norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
+                norms = update_trailing_norm_metadata_in_panel(
+                    a,
+                    norms,
+                    j,
+                    panel,
+                    panel_end,
+                    pivot_mode=pivot_mode,
+                )
                 panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
                 return a, perm, norms, panel_state
 
