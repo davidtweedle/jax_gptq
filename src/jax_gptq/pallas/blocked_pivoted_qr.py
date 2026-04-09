@@ -1111,8 +1111,15 @@ def update_trailing_norm_metadata_in_panel(
         def update_trailing_norms(norms_inner2: jnp.ndarray) -> jnp.ndarray:
             trailing_block = a[panel.panel_start :, panel_stop:]
             if pivot_mode == "smallest":
+                row_idx = jnp.arange(trailing_block.shape[0], dtype=jnp.int32)
+                local_next_row = next_col - panel.panel_start
+                masked_trailing = jnp.where(
+                    row_idx[:, None] >= local_next_row,
+                    trailing_block,
+                    0,
+                )
                 exact_sq = jnp.sum(
-                    jnp.square(trailing_block[next_col - panel.panel_start :, :]),
+                    jnp.square(masked_trailing),
                     axis=0,
                 )
                 return norms_inner2.at[panel_stop:].set(exact_sq)
