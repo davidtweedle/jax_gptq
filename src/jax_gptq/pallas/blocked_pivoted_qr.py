@@ -1348,7 +1348,8 @@ def _factor_panel_compiled(
     panel_state = state
     if pivot_mode != "largest":
         raise ValueError("_factor_panel_compiled currently supports pivot_mode='largest' only")
-    for j in range(k, panel_end):
+    def body_fun(j, carry):
+        a, perm, norms, panel_state = carry
         pivot_col = choose_pivot_dynamic(norms, j, pivot_mode)
         a, perm, norms = swap_columns_dynamic(a, perm, norms, j, pivot_col)
         panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
@@ -1381,6 +1382,14 @@ def _factor_panel_compiled(
 
         norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
         panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
+        return a, perm, norms, panel_state
+
+    a, perm, norms, panel_state = jax.lax.fori_loop(
+        k,
+        panel_end,
+        body_fun,
+        (a, perm, norms, panel_state),
+    )
 
     final_panel = CompactPanel(
         panel_start=k,
