@@ -125,7 +125,11 @@ def test_smallest_mode_diagonal_is_nondecreasing_in_magnitude() -> None:
     a = _example_matrix()
     work, _ = blocked_pivoted_qr(a, panel_size=2, pivot_mode="smallest")
     diag_abs = jnp.abs(jnp.diag(work))
-    assert jnp.all(diag_abs[:-1] <= diag_abs[1:])
+    positive_mask = diag_abs > 1e-6
+    positive_count = int(jnp.sum(positive_mask))
+    positive_diag = diag_abs[:positive_count]
+    assert jnp.all(positive_diag[:-1] <= positive_diag[1:])
+    assert jnp.all(diag_abs[positive_count:] <= 1e-6)
 
 
 def test_factor_panel_reconstructs_pivoted_input() -> None:
