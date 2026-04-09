@@ -853,17 +853,16 @@ def compute_exposed_trailing_row_from_compact_panel(
             "trailing_block row dimension must match panel rows, "
             f"got {trailing_block.shape[0]} and {panel.y.shape[0]}"
         )
-    if not 0 <= row_index < trailing_block.shape[0]:
-        raise ValueError(
-            f"row_index must be in [0, {trailing_block.shape[0]}), got {row_index}"
-        )
-
     # For one exposed row j, use
     # B'[j, :] = B[j, :] - (Y[j, :] T^T Y^T) B
-    row_weights = panel.y[row_index, :] @ panel.t.T
+    row_y = jax.lax.dynamic_index_in_dim(panel.y, row_index, axis=0, keepdims=False)
+    row_weights = row_y @ panel.t.T
     left = row_weights @ panel.y.T
     row_update = left @ trailing_block
-    return trailing_block[row_index, :] - row_update
+    row_b = jax.lax.dynamic_index_in_dim(
+        trailing_block, row_index, axis=0, keepdims=False
+    )
+    return row_b - row_update
 
 
 def update_norms_from_reflectors(
