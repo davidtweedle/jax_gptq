@@ -1459,7 +1459,8 @@ def _factor_panel_compiled(
                 return a, perm, norms, panel_state
 
             if pivot_mode == "smallest":
-                trailing_has_mass = jnp.any(norms[j:] > ZERO_TOL_SQ)
+                idx = jnp.arange(norms.shape[0], dtype=jnp.int32)
+                trailing_has_mass = jnp.any((idx >= j) & (norms > ZERO_TOL_SQ))
                 return jax.lax.cond(
                     trailing_has_mass,
                     continue_step,
