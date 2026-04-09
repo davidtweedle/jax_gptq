@@ -49,6 +49,9 @@ from .tpu_kernels import (
 
 PivotMode = Literal["largest", "smallest"]
 
+ZERO_TOL = 1e-12
+ZERO_TOL_SQ = ZERO_TOL * ZERO_TOL
+
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
@@ -148,7 +151,7 @@ def choose_pivot(
     norms: jnp.ndarray,
     j: int,
     pivot_mode: PivotMode,
-    zero_tol: float = 1e-12,
+    zero_tol: float = ZERO_TOL,
 ) -> int:
     """
     Choose the next pivot column from columns j:n.
@@ -182,7 +185,7 @@ def choose_pivot_dynamic(
     norms: jnp.ndarray,
     j: int,
     pivot_mode: PivotMode,
-    zero_tol: float = 1e-12,
+    zero_tol: float = ZERO_TOL,
 ) -> jnp.ndarray:
     idx = jnp.arange(norms.shape[0], dtype=jnp.int32)
     trailing_mask = idx >= j
@@ -1068,7 +1071,7 @@ def panel_step(
     """
     if pivot_mode == "smallest":
         trailing_norms = norms[j:]
-        if not bool(jnp.any(trailing_norms > 1e-12)):
+        if not bool(jnp.any(trailing_norms > (1e-12 * 1e-12))):
             panel_state = PanelState(
                 a=panel_state.a,
                 perm=panel_state.perm,
@@ -1186,7 +1189,7 @@ def factor_panel(
     for j in range(k, panel_end):
         if pivot_mode == "smallest":
             trailing_norms = norms[j:]
-            if not bool(jnp.any(trailing_norms > 1e-12)):
+            if not bool(jnp.any(trailing_norms > ZERO_TOL_SQ)):
                 panel_state = PanelState(
                     a=panel_state.a,
                     perm=panel_state.perm,
@@ -1346,8 +1349,8 @@ def factor_panel_pallas(
     - `FactorPanelResult` containing the updated work state and the compact
       panel object needed by the deferred trailing-update kernel
     """
-    timing_enabled = os.environ.get("JAX_GPTQ_QR_TIMING", "0") == "1"
-    if pivot_mode == "largest" and not timing_enabled:
+    reference_timing_enabled = os.environ.get("JAX_GPTQ_QR_TIMING", "0") == "1"
+    if pivot_mode in ("largest", "smallest") and not reference_timing_enabled:
         a_out, perm_out, norms_out, panel = _factor_panel_compiled(
             a=a,
             perm=perm,
@@ -1394,43 +1397,78 @@ def _factor_panel_compiled(
     norms = state.norms
     panel_end = state.panel_end
     panel_state = state
-    if pivot_mode != "largest":
-        raise ValueError("_factor_panel_compiled currently supports pivot_mode='largest' only")
     def body_fun(j, carry):
         a, perm, norms, panel_state = carry
-        pivot_col = choose_pivot_dynamic(norms, j, pivot_mode)
-        a, perm, norms = swap_columns_dynamic(a, perm, norms, j, pivot_col)
-        panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
+        def skip_step(carry_in):
+            return carry_in
 
-        v, tau, alpha = householder_vector_dynamic(a, j)
-        panel_state = append_reflector_to_panel_state_dynamic(panel_state, j, v, tau)
-        panel = CompactPanel(
-            panel_start=k,
-            panel_end=k + panel_state.active_cols + 1,
-            y=panel_state.y,
-            tau=panel_state.tau,
-            t=panel_state.t,
-        )
+        def run_step(carry_in):
+            a, perm, norms, panel_state = carry_in
 
-        a = apply_reflector_to_panel_block_dynamic(a, k, j, panel_end, v, tau, alpha)
+            def stop_early(state_in):
+                a, perm, norms, panel_state = state_in
+                panel_state = PanelState(
+                    a=panel_state.a,
+                    perm=panel_state.perm,
+                    norms=panel_state.norms,
+                    y=panel_state.y,
+                    tau=panel_state.tau,
+                    t=panel_state.t,
+                    k=panel_state.k,
+                    j=j,
+                    panel_end=panel_state.panel_end,
+                    active_cols=panel_state.active_cols,
+                    done=True,
+                )
+                return a, perm, norms, panel_state
 
-        panel_state = PanelState(
-            a=a,
-            perm=perm,
-            norms=norms,
-            y=panel_state.y,
-            tau=panel_state.tau,
-            t=panel_state.t,
-            k=panel_state.k,
-            j=j + 1,
-            panel_end=panel_state.panel_end,
-            active_cols=panel_state.active_cols + 1,
-            done=panel_state.done,
-        )
+            def continue_step(state_in):
+                a, perm, norms, panel_state = state_in
+                pivot_col = choose_pivot_dynamic(norms, j, pivot_mode)
+                a, perm, norms = swap_columns_dynamic(a, perm, norms, j, pivot_col)
+                panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
 
-        norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
-        panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
-        return a, perm, norms, panel_state
+                v, tau, alpha = householder_vector_dynamic(a, j)
+                panel_state = append_reflector_to_panel_state_dynamic(panel_state, j, v, tau)
+                panel = CompactPanel(
+                    panel_start=k,
+                    panel_end=k + panel_state.active_cols + 1,
+                    y=panel_state.y,
+                    tau=panel_state.tau,
+                    t=panel_state.t,
+                )
+
+                a = apply_reflector_to_panel_block_dynamic(a, k, j, panel_end, v, tau, alpha)
+
+                panel_state = PanelState(
+                    a=a,
+                    perm=perm,
+                    norms=norms,
+                    y=panel_state.y,
+                    tau=panel_state.tau,
+                    t=panel_state.t,
+                    k=panel_state.k,
+                    j=j + 1,
+                    panel_end=panel_state.panel_end,
+                    active_cols=panel_state.active_cols + 1,
+                    done=panel_state.done,
+                )
+
+                norms = update_trailing_norm_metadata_in_panel(a, norms, j, panel, panel_end)
+                panel_state = update_panel_state_after_norms(panel_state, a, perm, norms)
+                return a, perm, norms, panel_state
+
+            if pivot_mode == "smallest":
+                trailing_has_mass = jnp.any(norms[j:] > ZERO_TOL_SQ)
+                return jax.lax.cond(
+                    trailing_has_mass,
+                    continue_step,
+                    stop_early,
+                    (a, perm, norms, panel_state),
+                )
+            return continue_step((a, perm, norms, panel_state))
+
+        return jax.lax.cond(panel_state.done, skip_step, run_step, carry)
 
     a, perm, norms, panel_state = jax.lax.fori_loop(
         k,
@@ -1508,7 +1546,9 @@ def blocked_pivoted_qr(
 
     perm = jnp.arange(a.shape[1], dtype=jnp.int32)
     norms = initialize_trailing_norm_metadata(a)
-    timing_enabled = os.environ.get("JAX_GPTQ_QR_TIMING", "0") == "1"
+    reference_timing_enabled = os.environ.get("JAX_GPTQ_QR_TIMING", "0") == "1"
+    fused_timing_enabled = os.environ.get("JAX_GPTQ_QR_FUSED_TIMING", "0") == "1"
+    timing_enabled = reference_timing_enabled or fused_timing_enabled
     factor_panel_total = 0.0
     apply_panel_total = 0.0
     refresh_norms_total = 0.0
@@ -1551,13 +1591,21 @@ def blocked_pivoted_qr(
 
     if timing_enabled:
         avg_panel_width = (sum(panel_widths) / num_panels) if num_panels else 0.0
-        print("blocked_pivoted_qr_timing")
+        if fused_timing_enabled and not reference_timing_enabled:
+            print("blocked_pivoted_qr_fused_timing")
+        else:
+            print("blocked_pivoted_qr_timing")
         print(f"  num_panels={num_panels}")
         print(f"  avg_panel_width={avg_panel_width:.2f}")
         print(f"  panel_widths_head={panel_widths[:8]}")
         print(f"  factor_panel_total_sec={factor_panel_total:.6f}")
         print(f"  apply_panel_total_sec={apply_panel_total:.6f}")
         print(f"  refresh_norms_total_sec={refresh_norms_total:.6f}")
+        if fused_timing_enabled and not reference_timing_enabled:
+            if pivot_mode == "largest":
+                print("  factor_panel_impl=compiled_fori_loop")
+            else:
+                print("  factor_panel_impl=reference_smallest")
         if os.environ.get("JAX_GPTQ_TPU_KERNEL_DEBUG", "0") == "1":
             counters = get_tpu_kernel_debug_counters()
             print("tpu_kernel_counters")

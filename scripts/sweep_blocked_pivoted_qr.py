@@ -38,6 +38,11 @@ def main() -> None:
         help="Enable JAX_GPTQ_QR_TIMING=1 for each run",
     )
     parser.add_argument(
+        "--fused-timing",
+        action="store_true",
+        help="Enable JAX_GPTQ_QR_FUSED_TIMING=1 for each run",
+    )
+    parser.add_argument(
         "--kernel-debug",
         action="store_true",
         help="Enable JAX_GPTQ_TPU_KERNEL_DEBUG=1 for each run",
@@ -66,12 +71,14 @@ def main() -> None:
             ]
 
             env = None
-            if args.timing or args.kernel_debug:
+            if args.timing or args.fused_timing or args.kernel_debug:
                 import os
 
                 env = os.environ.copy()
                 if args.timing:
                     env["JAX_GPTQ_QR_TIMING"] = "1"
+                if args.fused_timing:
+                    env["JAX_GPTQ_QR_FUSED_TIMING"] = "1"
                 if args.kernel_debug:
                     env["JAX_GPTQ_TPU_KERNEL_DEBUG"] = "1"
 
