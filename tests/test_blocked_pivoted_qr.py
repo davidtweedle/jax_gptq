@@ -431,9 +431,13 @@ def test_factor_panel_pallas_matches_reference_factor_panel() -> None:
     expected = factor_panel(
         a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
     )
-    actual = factor_panel_pallas(
-        a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
-    )
+    os.environ["JAX_GPTQ_RECONSTRUCT_REFLECTORS"] = "1"
+    try:
+        actual = factor_panel_pallas(
+            a=a, perm=perm, norms=norms, k=0, panel_size=2, pivot_mode="largest"
+        )
+    finally:
+        os.environ.pop("JAX_GPTQ_RECONSTRUCT_REFLECTORS", None)
 
     assert np.allclose(np.asarray(expected[0], dtype=np.float32), np.asarray(actual.a, dtype=np.float32), atol=1e-6)
     assert np.array_equal(np.asarray(expected[1], dtype=np.int32), np.asarray(actual.perm, dtype=np.int32))

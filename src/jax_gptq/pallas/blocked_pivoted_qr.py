@@ -1409,11 +1409,14 @@ def factor_panel_pallas(
             panel_size=panel_size,
             pivot_mode=pivot_mode,
         )
-        panel_end_int = int(jax.device_get(panel.panel_end))
-        reflectors = []
-        for local_idx in range(panel_end_int - k):
-            j = k + local_idx
-            reflectors.append((j, panel.y[local_idx:, local_idx], panel.tau[local_idx]))
+        if os.environ.get("JAX_GPTQ_RECONSTRUCT_REFLECTORS", "0") == "1":
+            panel_end_int = int(jax.device_get(panel.panel_end))
+            reflectors = []
+            for local_idx in range(panel_end_int - k):
+                j = k + local_idx
+                reflectors.append((j, panel.y[local_idx:, local_idx], panel.tau[local_idx]))
+        else:
+            reflectors = []
     else:
         a_out, perm_out, norms_out, reflectors, panel = factor_panel(
             a=a,
