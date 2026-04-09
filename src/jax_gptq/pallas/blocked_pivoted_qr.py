@@ -959,41 +959,56 @@ def update_trailing_norm_metadata_in_panel(
         raise ValueError(f"norms must be shape ({a.shape[1]},), got {norms.shape}")
     if not 0 <= panel_end <= a.shape[1]:
         raise ValueError(f"panel_end must be in [0, {a.shape[1]}], got {panel_end}")
-    if j + 1 >= a.shape[1]:
-        return norms
-
     next_col = j + 1
     panel_stop = min(panel_end, a.shape[1])
 
-    def update_panel_norms(norms_in: jnp.ndarray) -> jnp.ndarray:
-        col_idx = jnp.arange(a.shape[1], dtype=jnp.int32)
-        row_idx = jnp.arange(a.shape[0], dtype=jnp.int32)
-        panel_col_mask = (col_idx >= next_col) & (col_idx < panel_stop)
-        panel_row_mask = row_idx[:, None] >= col_idx[None, :]
-        masked_panel = jnp.where(panel_row_mask & panel_col_mask[None, :], a, 0)
-        panel_norms_full = jnp.linalg.norm(masked_panel, axis=0)
-        return jnp.where(panel_col_mask, panel_norms_full, norms_in)
+    def do_update(norms_in: jnp.ndarray) -> jnp.ndarray:
+        def update_panel_norms(norms_inner: jnp.ndarray) -> jnp.ndarray:
+            col_idx = jnp.arange(a.shape[1], dtype=jnp.int32)
+            row_idx = jnp.arange(a.shape[0], dtype=jnp.int32)
+            panel_col_mask = (col_idx >= next_col) & (col_idx < panel_stop)
+            panel_row_mask = row_idx[:, None] >= col_idx[None, :]
+            masked_panel = jnp.where(panel_row_mask & panel_col_mask[None, :], a, 0)
+            panel_norms_full = jnp.linalg.norm(masked_panel, axis=0)
+            return jnp.where(panel_col_mask, panel_norms_full, norms_inner)
 
-    norms = jax.lax.cond(next_col < panel_stop, update_panel_norms, lambda x: x, norms)
-
-    def update_trailing_norms(norms_in: jnp.ndarray) -> jnp.ndarray:
-        trailing_block = jax.lax.dynamic_slice(
-            a,
-            (0, panel_stop),
-            (a.shape[0], a.shape[1] - panel_stop),
+        norms_inner = jax.lax.cond(
+            next_col < panel_stop,
+            update_panel_norms,
+            lambda x: x,
+            norms_in,
         )
-        exposed_row = compute_exposed_trailing_row_from_compact_panel(
-            panel,
-            trailing_block,
-            j,
-        )
-        current_sq = jnp.square(jax.lax.dynamic_slice(norms_in, (panel_stop,), (a.shape[1] - panel_stop,)))
-        updated_sq = jnp.maximum(current_sq - jnp.square(exposed_row), 0)
-        updated = jnp.sqrt(updated_sq)
-        return jax.lax.dynamic_update_slice(norms_in, updated, (panel_stop,))
 
-    norms = jax.lax.cond(panel_stop < a.shape[1], update_trailing_norms, lambda x: x, norms)
-    return norms
+        def update_trailing_norms(norms_inner2: jnp.ndarray) -> jnp.ndarray:
+            trailing_block = jax.lax.dynamic_slice(
+                a,
+                (0, panel_stop),
+                (a.shape[0], a.shape[1] - panel_stop),
+            )
+            exposed_row = compute_exposed_trailing_row_from_compact_panel(
+                panel,
+                trailing_block,
+                j,
+            )
+            current_sq = jnp.square(
+                jax.lax.dynamic_slice(
+                    norms_inner2,
+                    (panel_stop,),
+                    (a.shape[1] - panel_stop,),
+                )
+            )
+            updated_sq = jnp.maximum(current_sq - jnp.square(exposed_row), 0)
+            updated = jnp.sqrt(updated_sq)
+            return jax.lax.dynamic_update_slice(norms_inner2, updated, (panel_stop,))
+
+        return jax.lax.cond(
+            panel_stop < a.shape[1],
+            update_trailing_norms,
+            lambda x: x,
+            norms_inner,
+        )
+
+    return jax.lax.cond(next_col < a.shape[1], do_update, lambda x: x, norms)
 
 
 def panel_step(
