@@ -1029,9 +1029,6 @@ def update_trailing_norm_metadata_in_panel(
     - refreshes panel-column squared scores exactly every 8 completed
       in-panel steps
     - updates deferred trailing-column squared scores from the exact exposed row
-      for `pivot_mode="largest"`
-    - recomputes deferred trailing-column squared scores exactly every step
-      for `pivot_mode="smallest"`
 
     Later blocked version:
     - replace this with true in-panel norm downdates so we do not need to
@@ -1108,20 +1105,6 @@ def update_trailing_norm_metadata_in_panel(
 
         def update_trailing_norms(norms_inner2: jnp.ndarray) -> jnp.ndarray:
             trailing_block = a[panel.panel_start :, panel_stop:]
-            if pivot_mode == "smallest":
-                row_idx = jnp.arange(trailing_block.shape[0], dtype=jnp.int32)
-                local_next_row = next_col - panel.panel_start
-                masked_trailing = jnp.where(
-                    row_idx[:, None] >= local_next_row,
-                    trailing_block,
-                    0,
-                )
-                exact_sq = jnp.sum(
-                    jnp.square(masked_trailing),
-                    axis=0,
-                )
-                return norms_inner2.at[panel_stop:].set(exact_sq)
-
             exposed_row = compute_exposed_trailing_row_from_compact_panel(
                 panel,
                 trailing_block,
