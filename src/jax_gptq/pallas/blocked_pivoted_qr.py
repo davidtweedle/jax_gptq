@@ -1426,7 +1426,7 @@ def factor_panel_pallas(
       panel object needed by the deferred trailing-update kernel
     """
     reference_timing_enabled = os.environ.get("JAX_GPTQ_QR_TIMING", "0") == "1"
-    if pivot_mode == "largest" and not reference_timing_enabled:
+    if pivot_mode in ("largest", "smallest") and not reference_timing_enabled:
         a_out, perm_out, norms_out, panel = _factor_panel_compiled(
             a=a,
             perm=perm,
@@ -1685,7 +1685,7 @@ def blocked_pivoted_qr(
         print(f"  apply_panel_total_sec={apply_panel_total:.6f}")
         print(f"  refresh_norms_total_sec={refresh_norms_total:.6f}")
         if fused_timing_enabled and not reference_timing_enabled:
-            if pivot_mode == "largest":
+            if pivot_mode in ("largest", "smallest"):
                 print("  factor_panel_impl=compiled_fori_loop")
             else:
                 print("  factor_panel_impl=reference_smallest")
