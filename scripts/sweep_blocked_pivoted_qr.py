@@ -27,7 +27,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--panel-sizes",
-        default="8,16,32,64,128",
+        default="64,128,256,384,512",
         help="Comma-separated panel sizes",
     )
     parser.add_argument("--pivot-mode", choices=("largest", "smallest"), default="largest")

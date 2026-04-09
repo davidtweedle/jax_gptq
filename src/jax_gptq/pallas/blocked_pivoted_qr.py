@@ -1022,13 +1022,13 @@ def update_trailing_norm_metadata_in_panel(
     def do_update(norms_in: jnp.ndarray) -> jnp.ndarray:
         def update_panel_norms(norms_inner: jnp.ndarray) -> jnp.ndarray:
             panel_start = panel.panel_start
-            panel_block = a[:, panel_start:panel_stop]
+            panel_block = a[panel_start:, panel_start:panel_stop]
             current_panel_norms = norms_inner[panel_start:panel_stop]
             col_idx = jnp.arange(panel_start, panel_stop, dtype=jnp.int32)
             panel_col_mask = col_idx >= next_col
             panel_row = jax.lax.dynamic_index_in_dim(
                 panel_block,
-                j,
+                j - panel_start,
                 axis=0,
                 keepdims=False,
             )
@@ -1043,9 +1043,9 @@ def update_trailing_norm_metadata_in_panel(
             )
 
             def refresh_exact(panel_norms_in: jnp.ndarray) -> jnp.ndarray:
-                row_idx = jnp.arange(a.shape[0], dtype=jnp.int32)
+                row_idx = jnp.arange(panel_block.shape[0], dtype=jnp.int32)
                 masked_panel = jnp.where(
-                    row_idx[:, None] >= next_col,
+                    row_idx[:, None] >= (next_col - panel_start),
                     panel_block,
                     0,
                 )
@@ -1077,7 +1077,7 @@ def update_trailing_norm_metadata_in_panel(
         )
 
         def update_trailing_norms(norms_inner2: jnp.ndarray) -> jnp.ndarray:
-            trailing_block = a[:, panel_stop:]
+            trailing_block = a[panel.panel_start :, panel_stop:]
             exposed_row = compute_exposed_trailing_row_from_compact_panel(
                 panel,
                 trailing_block,
@@ -1363,7 +1363,7 @@ def apply_panel_to_trailing(
     if panel_end >= a.shape[1]:
         return a
 
-    updated = apply_compact_panel_to_block(panel, a[:, panel_end:])
+    updated = apply_compact_panel_to_block(panel, a[panel.panel_start :, panel_end:])
     a = a.at[:, panel_end:].set(updated)
     return a
 
@@ -1569,7 +1569,10 @@ def apply_panel_to_trailing_pallas(
     if panel_end >= a.shape[1]:
         return a
 
-    updated = apply_compact_panel_to_block_pallas(panel, a[:, panel_end:])
+    updated = apply_compact_panel_to_block_pallas(
+        panel,
+        a[panel.panel_start :, panel_end:],
+    )
     return a.at[:, panel_end:].set(updated)
 
 

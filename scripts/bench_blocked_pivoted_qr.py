@@ -12,7 +12,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, default=128)
     parser.add_argument("--cols", type=int, default=512)
-    parser.add_argument("--panel-size", type=int, default=8)
+    parser.add_argument("--panel-size", type=int, default=256)
     parser.add_argument("--pivot-mode", choices=("largest", "smallest"), default="largest")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
