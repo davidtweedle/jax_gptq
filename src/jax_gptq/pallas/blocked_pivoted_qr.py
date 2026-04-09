@@ -1027,9 +1027,7 @@ def update_trailing_norm_metadata_in_panel(
       compact panel
     - downdates remaining panel-column squared scores every step
     - refreshes panel-column squared scores exactly every 8 completed
-      in-panel steps for `pivot_mode="largest"`
-    - refreshes panel-column squared scores exactly every step for
-      `pivot_mode="smallest"`
+      in-panel steps
     - updates deferred trailing-column squared scores from the exact exposed row
       for `pivot_mode="largest"`
     - recomputes deferred trailing-column squared scores exactly every step
@@ -1049,7 +1047,7 @@ def update_trailing_norm_metadata_in_panel(
         raise ValueError(f"panel_end must be in [0, {a.shape[1]}], got {panel_end}")
     next_col = j + 1
     panel_stop = min(panel_end, a.shape[1])
-    panel_refresh_period = 1 if pivot_mode == "smallest" else 8
+    panel_refresh_period = 8
 
     def do_update(norms_in: jnp.ndarray) -> jnp.ndarray:
         def update_panel_norms(norms_inner: jnp.ndarray) -> jnp.ndarray:
