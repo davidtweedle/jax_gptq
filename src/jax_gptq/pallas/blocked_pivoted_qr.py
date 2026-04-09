@@ -136,7 +136,7 @@ def init_panel_state(
         a=a,
         perm=perm,
         norms=norms,
-        y=jnp.zeros((a.shape[0], width), dtype=a.dtype),
+        y=jnp.zeros((a.shape[0] - k, width), dtype=a.dtype),
         tau=jnp.zeros((width,), dtype=a.dtype),
         t=jnp.zeros((width, width), dtype=a.dtype),
         k=k,
@@ -338,6 +338,16 @@ def householder_vector_dynamic(
     return jax.lax.cond(sigma == 0, trivial_case, reflector_case, operand=None)
 
 
+def householder_vector_panel_local_dynamic(
+    a: jnp.ndarray,
+    k: int,
+    j: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    tail = a[k:, :]
+    local_j = j - k
+    return householder_vector_dynamic(tail, local_j)
+
+
 def apply_reflector_to_block(
     v: jnp.ndarray,
     tau: jnp.ndarray,
@@ -525,7 +535,7 @@ def build_compact_panel(
 
     Current behavior:
     - stores the reflector vectors in a dense `Y` matrix, one column per panel
-      reflector, aligned to global row indices
+      reflector, aligned to panel-local row indices
     - stores the corresponding scalar coefficients in `tau`
 
     Later blocked version:
@@ -539,7 +549,7 @@ def build_compact_panel(
         )
 
     width = panel_end - panel_start
-    y = jnp.zeros((n_rows, width), dtype=jnp.float32)
+    y = jnp.zeros((n_rows - panel_start, width), dtype=jnp.float32)
     tau = jnp.zeros((width,), dtype=jnp.float32)
 
     for local_idx, (j, v, tau_j) in enumerate(reflectors):
@@ -547,7 +557,8 @@ def build_compact_panel(
             raise ValueError(
                 f"reflector row index {j} is outside panel [{panel_start}, {panel_end})"
             )
-        y = y.at[j:, local_idx].set(v)
+        local_row = j - panel_start
+        y = y.at[local_row:, local_idx].set(v)
         tau = tau.at[local_idx].set(tau_j)
 
     t = jnp.zeros((width, width), dtype=jnp.float32)
@@ -592,15 +603,16 @@ def append_reflector_to_panel_state(
         raise ValueError(f"tau_j must be scalar, got {tau_j.shape}")
     if not state.k <= j < state.panel_end:
         raise ValueError(f"j must be in [{state.k}, {state.panel_end}), got {j}")
-    if state.y.shape[0] < j + v.shape[0]:
+    local_row = j - state.k
+    if state.y.shape[0] < local_row + v.shape[0]:
         raise ValueError(
             f"state.y row dimension is too small for reflector at row {j}: "
-            f"{state.y.shape[0]} < {j + v.shape[0]}"
+            f"{state.y.shape[0]} < {local_row + v.shape[0]}"
         )
 
     local_idx = j - state.k
     y_col = jnp.zeros((state.y.shape[0],), dtype=state.y.dtype)
-    y_col = jax.lax.dynamic_update_slice_in_dim(y_col, v, j, axis=0)
+    y_col = jax.lax.dynamic_update_slice_in_dim(y_col, v, local_row, axis=0)
     y = jax.lax.dynamic_update_slice(
         state.y,
         y_col[:, None],
@@ -761,8 +773,8 @@ def apply_reflector_to_panel_block_dynamic(
     tau: jnp.ndarray,
     alpha: jnp.ndarray,
 ) -> jnp.ndarray:
-    m = a.shape[0]
-    panel_block = a[:, k:panel_end]
+    m = a.shape[0] - k
+    panel_block = a[k:, k:panel_end]
     updated_panel = apply_reflector_to_block_pallas(v, tau, panel_block)
 
     col_idx = jnp.arange(k, panel_end, dtype=jnp.int32)
@@ -772,15 +784,16 @@ def apply_reflector_to_panel_block_dynamic(
     local_idx = j - k
     pivot_col = jax.lax.dynamic_slice(panel_block, (0, local_idx), (m, 1)).reshape((m,))
     row_idx = jnp.arange(m, dtype=jnp.int32)
-    pivot_col = jnp.where(row_idx > j, 0, pivot_col)
-    pivot_col = jnp.where(row_idx == j, alpha, pivot_col)
+    local_row = j - k
+    pivot_col = jnp.where(row_idx > local_row, 0, pivot_col)
+    pivot_col = jnp.where(row_idx == local_row, alpha, pivot_col)
     panel_block = jax.lax.dynamic_update_slice(
         panel_block,
         pivot_col[:, None],
         (0, local_idx),
     )
 
-    return a.at[:, k:panel_end].set(panel_block)
+    return a.at[k:, k:panel_end].set(panel_block)
 
 
 def apply_compact_panel_to_block(
@@ -806,14 +819,23 @@ def apply_compact_panel_to_block(
     block = jnp.asarray(block)
     if block.ndim != 2:
         raise ValueError(f"block must be 2D, got {block.shape}")
-    if block.shape[0] != panel.y.shape[0]:
+    if block.shape[0] == panel.y.shape[0]:
+        block_tail = block
+        prefix_rows = None
+    elif block.shape[0] == panel.panel_start + panel.y.shape[0]:
+        block_tail = block[panel.panel_start :, :]
+        prefix_rows = block[: panel.panel_start, :]
+    else:
         raise ValueError(
-            f"block row dimension must match panel rows, got {block.shape[0]} and {panel.y.shape[0]}"
+            f"block row dimension must match panel-local or full rows, got {block.shape[0]}"
         )
 
-    w = panel.y.T @ block
+    w = panel.y.T @ block_tail
     w = panel.t.T @ w
-    return block - panel.y @ w
+    updated_tail = block_tail - panel.y @ w
+    if prefix_rows is None:
+        return updated_tail
+    return jnp.concatenate([prefix_rows, updated_tail], axis=0)
 
 
 def apply_compact_panel_to_block_pallas(
@@ -829,14 +851,31 @@ def apply_compact_panel_to_block_pallas(
     - `gpu` uses the GPU kernel module
     - `tpu` raises until the TPU kernel is implemented
     """
+    block = jnp.asarray(block)
+    if block.shape[0] == panel.y.shape[0]:
+        block_tail = block
+        prefix_rows = None
+    elif block.shape[0] == panel.panel_start + panel.y.shape[0]:
+        block_tail = block[panel.panel_start :, :]
+        prefix_rows = block[: panel.panel_start, :]
+    else:
+        raise ValueError(
+            f"block row dimension must match panel-local or full rows, got {block.shape[0]}"
+        )
+
     backend = selected_kernel_backend()
     if backend == "reference":
-        return apply_compact_panel_to_block(panel, block)
-    if backend == "gpu":
-        return apply_compact_panel_to_block_pallas_gpu(panel, block)
-    if backend == "tpu":
-        return apply_compact_panel_to_block_pallas_tpu(panel, block)
-    raise ValueError(f"unsupported kernel backend {backend!r}")
+        updated_tail = apply_compact_panel_to_block(panel, block_tail)
+    elif backend == "gpu":
+        updated_tail = apply_compact_panel_to_block_pallas_gpu(panel, block_tail)
+    elif backend == "tpu":
+        updated_tail = apply_compact_panel_to_block_pallas_tpu(panel, block_tail)
+    else:
+        raise ValueError(f"unsupported kernel backend {backend!r}")
+
+    if prefix_rows is None:
+        return updated_tail
+    return jnp.concatenate([prefix_rows, updated_tail], axis=0)
 
 
 def compute_exposed_trailing_row_from_compact_panel(
@@ -853,19 +892,30 @@ def compute_exposed_trailing_row_from_compact_panel(
     trailing_block = jnp.asarray(trailing_block)
     if trailing_block.ndim != 2:
         raise ValueError(f"trailing_block must be 2D, got {trailing_block.shape}")
-    if trailing_block.shape[0] != panel.y.shape[0]:
+    if trailing_block.shape[0] == panel.y.shape[0]:
+        local_row_index = row_index
+        trailing_tail = trailing_block
+    elif trailing_block.shape[0] == panel.panel_start + panel.y.shape[0]:
+        local_row_index = row_index - panel.panel_start
+        trailing_tail = trailing_block[panel.panel_start :, :]
+    else:
         raise ValueError(
-            "trailing_block row dimension must match panel rows, "
-            f"got {trailing_block.shape[0]} and {panel.y.shape[0]}"
+            "trailing_block row dimension must match panel-local or full rows, "
+            f"got {trailing_block.shape[0]}"
         )
     # For one exposed row j, use
     # B'[j, :] = B[j, :] - (Y[j, :] T^T Y^T) B
-    row_y = jax.lax.dynamic_index_in_dim(panel.y, row_index, axis=0, keepdims=False)
+    row_y = jax.lax.dynamic_index_in_dim(
+        panel.y,
+        local_row_index,
+        axis=0,
+        keepdims=False,
+    )
     row_weights = row_y @ panel.t.T
     left = row_weights @ panel.y.T
-    row_update = left @ trailing_block
+    row_update = left @ trailing_tail
     row_b = jax.lax.dynamic_index_in_dim(
-        trailing_block, row_index, axis=0, keepdims=False
+        trailing_tail, local_row_index, axis=0, keepdims=False
     )
     return row_b - row_update
 
@@ -1363,7 +1413,7 @@ def factor_panel_pallas(
         reflectors = []
         for local_idx in range(panel_end_int - k):
             j = k + local_idx
-            reflectors.append((j, panel.y[j:, local_idx], panel.tau[local_idx]))
+            reflectors.append((j, panel.y[local_idx:, local_idx], panel.tau[local_idx]))
     else:
         a_out, perm_out, norms_out, reflectors, panel = factor_panel(
             a=a,
@@ -1428,7 +1478,7 @@ def _factor_panel_compiled(
                 a, perm, norms = swap_columns_dynamic(a, perm, norms, j, pivot_col)
                 panel_state = update_panel_state_after_swap(panel_state, a, perm, norms, j)
 
-                v, tau, alpha = householder_vector_dynamic(a, j)
+                v, tau, alpha = householder_vector_panel_local_dynamic(a, k, j)
                 panel_state = append_reflector_to_panel_state_dynamic(panel_state, j, v, tau)
                 panel = CompactPanel(
                     panel_start=k,
@@ -1603,7 +1653,7 @@ def blocked_pivoted_qr(
         print(f"  apply_panel_total_sec={apply_panel_total:.6f}")
         print(f"  refresh_norms_total_sec={refresh_norms_total:.6f}")
         if fused_timing_enabled and not reference_timing_enabled:
-            if pivot_mode == "largest":
+            if pivot_mode in ("largest", "smallest"):
                 print("  factor_panel_impl=compiled_fori_loop")
             else:
                 print("  factor_panel_impl=reference_smallest")
