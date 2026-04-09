@@ -945,9 +945,10 @@ def update_trailing_norm_metadata_in_panel(
     Current behavior:
     - uses the exact exposed trailing row induced by the accumulated panel
       compact panel
-    - updates remaining panel-column scores directly from the explicitly updated
-      panel block
-    - updates deferred trailing-column scores from the exact exposed row
+    - downdates remaining panel-column squared scores every step
+    - refreshes panel-column squared scores exactly every 8 completed
+      in-panel steps
+    - updates deferred trailing-column squared scores from the exact exposed row
 
     Later blocked version:
     - replace this with true in-panel norm downdates so we do not need to
@@ -963,6 +964,7 @@ def update_trailing_norm_metadata_in_panel(
         raise ValueError(f"panel_end must be in [0, {a.shape[1]}], got {panel_end}")
     next_col = j + 1
     panel_stop = min(panel_end, a.shape[1])
+    panel_refresh_period = 8
 
     def do_update(norms_in: jnp.ndarray) -> jnp.ndarray:
         def update_panel_norms(norms_inner: jnp.ndarray) -> jnp.ndarray:
@@ -970,19 +972,43 @@ def update_trailing_norm_metadata_in_panel(
             panel_block = a[:, panel_start:panel_stop]
             current_panel_norms = norms_inner[panel_start:panel_stop]
             col_idx = jnp.arange(panel_start, panel_stop, dtype=jnp.int32)
-            row_idx = jnp.arange(a.shape[0], dtype=jnp.int32)
             panel_col_mask = col_idx >= next_col
-            panel_row_mask = row_idx >= next_col
-            masked_panel = jnp.where(
-                panel_row_mask[:, None],
+            panel_row = jax.lax.dynamic_index_in_dim(
                 panel_block,
+                j,
+                axis=0,
+                keepdims=False,
+            )
+            downdated_panel_norms = jnp.maximum(
+                current_panel_norms - jnp.square(panel_row),
                 0,
             )
-            panel_norms_full = jnp.sum(jnp.square(masked_panel), axis=0)
-            updated_panel_norms = jnp.where(
+            downdated_panel_norms = jnp.where(
                 panel_col_mask,
-                panel_norms_full,
+                downdated_panel_norms,
                 current_panel_norms,
+            )
+
+            def refresh_exact(panel_norms_in: jnp.ndarray) -> jnp.ndarray:
+                row_idx = jnp.arange(a.shape[0], dtype=jnp.int32)
+                masked_panel = jnp.where(
+                    row_idx[:, None] >= next_col,
+                    panel_block,
+                    0,
+                )
+                exact_panel_norms = jnp.sum(jnp.square(masked_panel), axis=0)
+                return jnp.where(
+                    panel_col_mask,
+                    exact_panel_norms,
+                    panel_norms_in,
+                )
+
+            completed_steps = next_col - panel_start
+            updated_panel_norms = jax.lax.cond(
+                (completed_steps % panel_refresh_period) == 0,
+                refresh_exact,
+                lambda x: x,
+                downdated_panel_norms,
             )
             return jax.lax.dynamic_update_slice(
                 norms_inner,

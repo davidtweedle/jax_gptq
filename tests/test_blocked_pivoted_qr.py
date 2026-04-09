@@ -485,7 +485,10 @@ def test_blocked_pivoted_qr_matches_driver_built_from_pallas_entry_points() -> N
             result.panel.panel_end,
         )
         expected_perm = result.perm
-        expected_norms = jnp.linalg.norm(expected_work[result.panel.panel_end :, :], axis=0)
+        expected_norms = jnp.sum(
+            jnp.square(expected_work[result.panel.panel_end :, :]),
+            axis=0,
+        )
 
     actual_work, actual_perm = blocked_pivoted_qr(a, panel_size=panel_size, pivot_mode="largest")
 
