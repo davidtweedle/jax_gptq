@@ -59,6 +59,15 @@ def _round_up_to_multiple(n: int, multiple: int) -> int:
     return ((n + multiple - 1) // multiple) * multiple
 
 
+def _compact_panel_tpu_tile_cols() -> int:
+    raw = os.environ.get("JAX_GPTQ_TPU_COMPACT_PANEL_TILE_COLS", "512")
+    try:
+        tile_cols = int(raw)
+    except ValueError:
+        tile_cols = 512
+    return max(128, _round_up_to_multiple(tile_cols, 128))
+
+
 def tpu_reflector_kernel_supported_shape(block_shape: tuple[int, int]) -> bool:
     m, n = block_shape
     if m <= 0 or n <= 0:
@@ -209,16 +218,13 @@ def apply_compact_panel_to_block_pallas_tpu(
     m, n = block.shape
     b = panel.y.shape[1]
     padded_b = _round_up_to_multiple(b, 8)
-    padded_n = _round_up_to_multiple(n, 128)
+    tile_cols = _compact_panel_tpu_tile_cols()
 
     y = panel.y
     t = panel.t
-    block_padded = block
     if padded_b != b:
         y = jnp.pad(y, ((0, 0), (0, padded_b - b)))
         t = jnp.pad(t, ((0, padded_b - b), (0, padded_b - b)))
-    if padded_n != n:
-        block_padded = jnp.pad(block, ((0, 0), (0, padded_n - n)))
 
     def kernel(block_ref, y_ref, t_ref, out_ref):
         block_tile = block_ref[:, :]
@@ -241,11 +247,6 @@ def apply_compact_panel_to_block_pallas_tpu(
         )
         out_ref[:, :] = updated
 
-    out_shape = jax.ShapeDtypeStruct((m, padded_n), block.dtype)
-    block_spec = pl.BlockSpec(
-        index_map=lambda: (0, 0),
-        block_shape=(m, padded_n),
-    )
     full_y_spec = pl.BlockSpec(
         index_map=lambda: (0, 0),
         block_shape=(m, padded_b),
@@ -255,11 +256,29 @@ def apply_compact_panel_to_block_pallas_tpu(
         block_shape=(padded_b, padded_b),
     )
 
-    _bump_tpu_kernel_counter("compact_panel_kernel_calls")
-    updated_padded = pl.pallas_call(
-        kernel,
-        out_shape=out_shape,
-        in_specs=[block_spec, full_y_spec, full_t_spec],
-        out_specs=block_spec,
-    )(block_padded, y, t)
-    return updated_padded[:, :n]
+    updated_tiles = []
+    for col_start in range(0, n, tile_cols):
+        col_stop = min(col_start + tile_cols, n)
+        block_tile = block[:, col_start:col_stop]
+        tile_n = block_tile.shape[1]
+        padded_n = _round_up_to_multiple(tile_n, 128)
+        block_padded = block_tile
+        if padded_n != tile_n:
+            block_padded = jnp.pad(block_tile, ((0, 0), (0, padded_n - tile_n)))
+
+        out_shape = jax.ShapeDtypeStruct((m, padded_n), block.dtype)
+        block_spec = pl.BlockSpec(
+            index_map=lambda: (0, 0),
+            block_shape=(m, padded_n),
+        )
+
+        _bump_tpu_kernel_counter("compact_panel_kernel_calls")
+        updated_padded = pl.pallas_call(
+            kernel,
+            out_shape=out_shape,
+            in_specs=[block_spec, full_y_spec, full_t_spec],
+            out_specs=block_spec,
+        )(block_padded, y, t)
+        updated_tiles.append(updated_padded[:, :tile_n])
+
+    return jnp.concatenate(updated_tiles, axis=1)
