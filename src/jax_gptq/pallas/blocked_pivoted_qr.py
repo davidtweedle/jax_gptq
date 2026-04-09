@@ -757,23 +757,25 @@ def apply_reflector_to_panel_block_dynamic(
     alpha: jnp.ndarray,
 ) -> jnp.ndarray:
     m = a.shape[0]
+    panel_width = panel_end - k
     panel_block = a[:, k:panel_end]
     updated_panel = apply_reflector_to_block_pallas(v, tau, panel_block)
 
-    col_idx = jnp.arange(k, panel_end, dtype=jnp.int32)
-    active_col_mask = col_idx >= j
-    panel_block = jnp.where(active_col_mask[None, :], updated_panel, panel_block)
-
     local_idx = j - k
-    pivot_col = jax.lax.dynamic_slice(panel_block, (0, local_idx), (m, 1)).reshape((m,))
+    pivot_col = jax.lax.dynamic_index_in_dim(
+        updated_panel, local_idx, axis=1, keepdims=False
+    )
     row_idx = jnp.arange(m, dtype=jnp.int32)
     pivot_col = jnp.where(row_idx > j, 0, pivot_col)
     pivot_col = jnp.where(row_idx == j, alpha, pivot_col)
-    panel_block = jax.lax.dynamic_update_slice(
-        panel_block,
+    updated_panel = jax.lax.dynamic_update_slice(
+        updated_panel,
         pivot_col[:, None],
         (0, local_idx),
     )
+
+    active_col_mask = jnp.arange(panel_width, dtype=jnp.int32) >= local_idx
+    panel_block = jnp.where(active_col_mask[None, :], updated_panel, panel_block)
 
     return a.at[:, k:panel_end].set(panel_block)
 
