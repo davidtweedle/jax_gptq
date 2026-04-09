@@ -1405,7 +1405,7 @@ def apply_panel_to_trailing(
         return a
 
     updated = apply_compact_panel_to_block(panel, a[panel.panel_start :, panel_end:])
-    a = a.at[:, panel_end:].set(updated)
+    a = a.at[panel.panel_start :, panel_end:].set(updated)
     return a
 
 
@@ -1621,7 +1621,7 @@ def apply_panel_to_trailing_pallas(
         panel,
         a[panel.panel_start :, panel_end:],
     )
-    return a.at[:, panel_end:].set(updated)
+    return a.at[panel.panel_start :, panel_end:].set(updated)
 
 
 def blocked_pivoted_qr(
