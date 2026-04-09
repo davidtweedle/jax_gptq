@@ -56,6 +56,15 @@ ZERO_TOL_SQ = ZERO_TOL * ZERO_TOL
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class CompactPanel:
+    """
+    Compact WY panel representation.
+
+    Conventions:
+    - `panel_start` / `panel_end` are global matrix row/column indices
+    - `y` is stored in panel-local row coordinates, i.e. over rows
+      `panel_start:`
+    - `tau` and `t` have one entry/column per accepted panel reflector
+    """
     panel_start: int
     panel_end: int
     y: jnp.ndarray
@@ -66,6 +75,14 @@ class CompactPanel:
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class PanelState:
+    """
+    Mutable panel factorization state.
+
+    Conventions:
+    - `a`, `perm`, `norms` are global work arrays
+    - `y` is panel-local over rows `k:`
+    - `j` is the current global panel step
+    """
     a: jnp.ndarray
     perm: jnp.ndarray
     norms: jnp.ndarray
@@ -89,7 +106,8 @@ class FactorPanelResult:
     - `perm`: updated global column permutation
     - `norms`: updated trailing norm metadata
     - `reflectors`: reference-only reflector list retained for parity tests
-    - `panel`: compact panel representation for deferred trailing updates
+    - `panel`: compact panel representation for deferred trailing updates,
+      with `panel.y` stored in panel-local row coordinates
     """
     a: jnp.ndarray
     perm: jnp.ndarray
@@ -591,9 +609,10 @@ def append_reflector_to_panel_state(
     Incrementally append one reflector to the panel-state compact buffers.
 
     This is the stateful counterpart to `build_compact_panel(...)`.
-    For now it only updates `y`, `tau`, and `t`; the caller still owns the
-    actual panel factorization logic and any consistency checks against the
-    reflector-list reference path.
+    `v` is interpreted in panel-local coordinates, starting at local row
+    `j - state.k`. For now this only updates `y`, `tau`, and `t`; the caller
+    still owns the actual panel factorization logic and any consistency checks
+    against the reflector-list reference path.
     """
     v = jnp.asarray(v)
     tau_j = jnp.asarray(tau_j)
@@ -809,6 +828,11 @@ def apply_compact_panel_to_block(
 
     and this helper applies `Q_panel` on the left to `block`.
 
+    Accepted block layouts:
+    - panel-local tail block with row shape `panel.y.shape[0]`
+    - full block with row shape `panel.panel_start + panel.y.shape[0]`
+      in which case only rows `panel.panel_start:` are transformed
+
     Current usage:
     - parity helper only
 
@@ -888,6 +912,8 @@ def compute_exposed_trailing_row_from_compact_panel(
     panel representation.
 
     This is the compact counterpart to `compute_exposed_trailing_row`.
+    `row_index` is a global row index for full blocks and a panel-local row
+    index for local tail blocks.
     """
     trailing_block = jnp.asarray(trailing_block)
     if trailing_block.ndim != 2:
