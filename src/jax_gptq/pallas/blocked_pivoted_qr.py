@@ -167,10 +167,11 @@ def choose_pivot(
         raise ValueError(f"j must be in [0, {norms.shape[0]}), got {j}")
 
     trailing_norms = norms[j:]
+    zero_tol_sq = zero_tol * zero_tol
     if pivot_mode == "largest":
         pivot_offset = jnp.argmax(trailing_norms)
     elif pivot_mode == "smallest":
-        masked_norms = jnp.where(trailing_norms > zero_tol, trailing_norms, jnp.inf)
+        masked_norms = jnp.where(trailing_norms > zero_tol_sq, trailing_norms, jnp.inf)
         pivot_offset = jnp.argmin(masked_norms)
     else:
         raise ValueError(f"unsupported pivot_mode={pivot_mode}")
@@ -185,11 +186,12 @@ def choose_pivot_dynamic(
 ) -> jnp.ndarray:
     idx = jnp.arange(norms.shape[0], dtype=jnp.int32)
     trailing_mask = idx >= j
+    zero_tol_sq = zero_tol * zero_tol
     if pivot_mode == "largest":
         masked_norms = jnp.where(trailing_mask, norms, -jnp.inf)
         return jnp.argmax(masked_norms).astype(jnp.int32)
     elif pivot_mode == "smallest":
-        positive_mask = trailing_mask & (norms > zero_tol)
+        positive_mask = trailing_mask & (norms > zero_tol_sq)
         masked_norms = jnp.where(positive_mask, norms, jnp.inf)
         return jnp.argmin(masked_norms).astype(jnp.int32)
     else:
@@ -409,8 +411,8 @@ def update_norms_exact(a: jnp.ndarray, j: int) -> jnp.ndarray:
         return norms
 
     trailing = a[j + 1 :, j + 1 :]
-    trailing_norms = jnp.linalg.norm(trailing, axis=0)
-    norms = norms.at[j + 1 :].set(trailing_norms)
+    trailing_norms_sq = jnp.sum(jnp.square(trailing), axis=0)
+    norms = norms.at[j + 1 :].set(trailing_norms_sq)
     return norms
 
 
@@ -882,8 +884,8 @@ def update_norms_from_reflectors(
         return norms
 
     trailing = apply_reflectors_to_trailing_view(a, reflectors, j + 1)
-    trailing_norms = jnp.linalg.norm(trailing[j + 1 :, :], axis=0)
-    norms = norms.at[j + 1 :].set(trailing_norms)
+    trailing_norms_sq = jnp.sum(jnp.square(trailing[j + 1 :, :]), axis=0)
+    norms = norms.at[j + 1 :].set(trailing_norms_sq)
     return norms
 
 
@@ -892,7 +894,8 @@ def initialize_trailing_norm_metadata(a: jnp.ndarray) -> jnp.ndarray:
     Initialize per-column trailing norm metadata from the current matrix state.
 
     Metadata convention:
-    - `norms[c]` stores the norm of the active trailing portion of column `c`
+    - `norms[c]` stores the squared norm of the active trailing portion of
+      column `c`
     - for the current fully synchronized reference state, this is simply the
       full column norm
 
@@ -903,7 +906,7 @@ def initialize_trailing_norm_metadata(a: jnp.ndarray) -> jnp.ndarray:
     a = jnp.asarray(a)
     if a.ndim != 2:
         raise ValueError(f"a must be 2D, got {a.shape}")
-    return jnp.linalg.norm(a, axis=0)
+    return jnp.sum(jnp.square(a), axis=0)
 
 
 def refresh_trailing_norm_metadata(a: jnp.ndarray, start_row: int) -> jnp.ndarray:
@@ -925,7 +928,7 @@ def refresh_trailing_norm_metadata(a: jnp.ndarray, start_row: int) -> jnp.ndarra
     norms = jnp.zeros((a.shape[1],), dtype=a.dtype)
     if start_row >= a.shape[0]:
         return norms
-    norms = norms.at[:].set(jnp.linalg.norm(a[start_row:, :], axis=0))
+    norms = norms.at[:].set(jnp.sum(jnp.square(a[start_row:, :]), axis=0))
     return norms
 
 
@@ -942,9 +945,9 @@ def update_trailing_norm_metadata_in_panel(
     Current behavior:
     - uses the exact exposed trailing row induced by the accumulated panel
       compact panel
-    - updates remaining panel-column norms directly from the explicitly updated
+    - updates remaining panel-column scores directly from the explicitly updated
       panel block
-    - updates deferred trailing-column norms from the exact exposed row
+    - updates deferred trailing-column scores from the exact exposed row
 
     Later blocked version:
     - replace this with true in-panel norm downdates so we do not need to
@@ -975,7 +978,7 @@ def update_trailing_norm_metadata_in_panel(
                 panel_block,
                 0,
             )
-            panel_norms_full = jnp.linalg.norm(masked_panel, axis=0)
+            panel_norms_full = jnp.sum(jnp.square(masked_panel), axis=0)
             updated_panel_norms = jnp.where(
                 panel_col_mask,
                 panel_norms_full,
@@ -1001,10 +1004,9 @@ def update_trailing_norm_metadata_in_panel(
                 trailing_block,
                 j,
             )
-            current_sq = jnp.square(norms_inner2[panel_stop:])
+            current_sq = norms_inner2[panel_stop:]
             updated_sq = jnp.maximum(current_sq - jnp.square(exposed_row), 0)
-            updated = jnp.sqrt(updated_sq)
-            return norms_inner2.at[panel_stop:].set(updated)
+            return norms_inner2.at[panel_stop:].set(updated_sq)
 
         return jax.lax.cond(
             panel_stop < a.shape[1],
